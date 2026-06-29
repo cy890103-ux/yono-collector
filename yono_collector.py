@@ -1966,6 +1966,72 @@ def watch_and_fill(interval=180):
                 else:
                     print(f"  ❌ 写入失败: {r.get('msg')}")
 
+            # ── 扫描只有 Source Link 的空白记录，自动补全图片 + 评判字段 ──
+            link_pending = [
+                item for item in items
+                if (
+                    (item.get("fields", {}).get("Source Link｜来源链接") or "")
+                    and not item.get("fields", {}).get("Image / File｜图片或文件")
+                    and not item.get("fields", {}).get("Score｜评分")
+                )
+            ]
+            if link_pending:
+                print(f"[{now_str}] 🔗 发现 {len(link_pending)} 条只有来源链接待补全")
+            for item in link_pending:
+                fields = item.get("fields", {})
+                link_field = fields.get("Source Link｜来源链接", "")
+                link = link_field.get("link", "") if isinstance(link_field, dict) else str(link_field or "")
+                if not link:
+                    continue
+                print(f"  处理: {link[:70]}")
+
+                existing_cat = fields.get("Category｜分类", "")
+                category = existing_cat if existing_cat and existing_cat not in ("Block", "OOTD") else "Archive"
+
+                img_url = _extract_image_url(link)
+                if not img_url:
+                    print(f"    ⚠️ 无法提取图片 URL，跳过（可手动上传）")
+                    continue
+
+                img_path, img_size = download_image(img_url, f"watch_fill_{item['record_id'][:8]}")
+                if not img_path:
+                    print(f"    ❌ 图片下载失败")
+                    continue
+
+                alt = fields.get("Notes｜备注", "") or link
+                pseudo_photo = {"alt": alt, "width": 1200, "height": 1200}
+                judge_fields = get_judge_fields(link, keywords_cfg, judge_cfg, category=category, photo=pseudo_photo)
+
+                asset_name = fields.get("Asset Name｜素材名称", "") or build_asset_name(
+                    category,
+                    alt=alt,
+                    visual_tags=judge_fields.get("Visual Tags｜视觉标签", []),
+                    reason=judge_fields.get("YONO Reason｜为什么适合 YONO", ""),
+                )
+                source_name = _guess_source_name(link)
+                filename = f"watch_{today_str}_{item['record_id'][:8]}.jpg"
+                file_token = upload_to_feishu_drive(token, img_path, img_size, filename, feishu_creds)
+                os.remove(img_path)
+
+                update_fields = {
+                    "Asset Name｜素材名称": asset_name,
+                    "Date｜收集日期": fields.get("Date｜收集日期") or now_ts,
+                    "Source｜来源平台": fields.get("Source｜来源平台") or source_name,
+                    **judge_fields,
+                }
+                if file_token:
+                    update_fields["Image / File｜图片或文件"] = [{"file_token": file_token}]
+
+                r = requests.post(
+                    f"https://open.feishu.cn/open-apis/bitable/v1/apps/{feishu_creds['app_token']}/tables/{feishu_creds['table_id']}/records/batch_update",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json={"records": [{"record_id": item["record_id"], "fields": update_fields}]}
+                ).json()
+                if r.get("code") == 0:
+                    print(f"    ✅ {asset_name} [{category} ★{judge_fields['Score｜评分']}] {img_size//1024}KB [{source_name}]")
+                else:
+                    print(f"    ❌ 写入失败: {r.get('msg')}")
+
             # ── 普通分类：Status=Save → 补全 Title / Post Content ──
             pending = [
                 item for item in items
