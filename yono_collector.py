@@ -951,16 +951,20 @@ def get_existing_links(token, feishu_creds):
 
 
 def download_image(url, idx):
-    """下载图片到临时文件"""
-    resp = requests.get(url, stream=True, timeout=30)
-    if resp.status_code != 200:
+    """下载图片到临时文件，网络异常时返回 (None, 0) 而非崩溃"""
+    try:
+        resp = requests.get(url, stream=True, timeout=30)
+        if resp.status_code != 200:
+            return None, 0
+        path = os.path.join(tempfile.gettempdir(), f"yono_pexels_{idx}.jpg")
+        with open(path, "wb") as f:
+            for chunk in resp.iter_content(8192):
+                f.write(chunk)
+        size = os.path.getsize(path)
+        return path, size
+    except Exception as e:
+        print(f"  ⚠️ 图片下载异常（跳过）: {e.__class__.__name__}: {str(e)[:80]}")
         return None, 0
-    path = os.path.join(tempfile.gettempdir(), f"yono_pexels_{idx}.jpg")
-    with open(path, "wb") as f:
-        for chunk in resp.iter_content(8192):
-            f.write(chunk)
-    size = os.path.getsize(path)
-    return path, size
 
 
 def download_file(url, filename, headers=None, min_size=1, expected_content_prefix=None):

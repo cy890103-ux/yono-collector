@@ -13,12 +13,12 @@ echo "====== $(date '+%Y-%m-%d %H:%M:%S') 开始每日抓取 ======" >> "$LOG"
 cd "$SCRIPT_DIR"
 
 echo "--- Postcard ---" >> "$LOG"
-$PYTHON yono_collector.py --keyword "warm quiet morning light emotion" --count 5 --images 4 >> "$LOG" 2>&1
+$PYTHON yono_collector.py --keyword "warm quiet morning light emotion" --count 5 --images 4 >> "$LOG" 2>&1 || echo "⚠️ Postcard 出错，继续下一分类" >> "$LOG"
 
 echo "--- Archive ---" >> "$LOG"
-$PYTHON yono_collector.py --keyword "vintage brand design photography" --count 5 --images 4 >> "$LOG" 2>&1
+$PYTHON yono_collector.py --keyword "vintage brand design photography" --count 5 --images 4 >> "$LOG" 2>&1 || echo "⚠️ Archive 出错，继续下一分类" >> "$LOG"
 
 echo "--- Tape ---" >> "$LOG"
-$PYTHON yono_collector.py --keyword "ambient indie soundtrack" --count 5 --images 4 >> "$LOG" 2>&1
+$PYTHON yono_collector.py --keyword "ambient indie soundtrack" --count 5 --images 4 >> "$LOG" 2>&1 || echo "⚠️ Tape 出错，继续下一分类" >> "$LOG"
 
 echo "====== $(date '+%Y-%m-%d %H:%M:%S') 完成 ======" >> "$LOG"
