@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Prepare title/copy fields in Feishu Bitable.
 
-- Ensure the text field "标题" exists.
-- Clear all existing values in "标题" and "Content Angle｜内容角度".
+- Ensure the text field "Title｜标题" exists.
+- Clear all existing values in "Title｜标题" and "Content Angle｜内容角度".
 """
 
 import os
@@ -77,7 +77,7 @@ def list_fields(token, creds):
 def ensure_title_field(token, creds):
     fields = list_fields(token, creds)
     for field in fields:
-        if field.get("field_name") == "标题":
+        if field.get("field_name") == "Title｜标题":
             print(f"标题字段已存在: {field.get('field_id')}")
             return field
 
@@ -86,7 +86,7 @@ def ensure_title_field(token, creds):
         f"/bitable/v1/apps/{creds['app_token']}/tables/{creds['table_id']}/fields",
         token=token,
         json={
-            "field_name": "标题",
+            "field_name": "Title｜标题",
             "type": 1,
         },
     )
@@ -136,7 +136,7 @@ def main():
         {
             "record_id": record["record_id"],
             "fields": {
-                "标题": "",
+                "Title｜标题": "",
                 "Content Angle｜内容角度": "",
             },
         }

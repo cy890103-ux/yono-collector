@@ -103,11 +103,81 @@ def get_judge_fields(keyword, keywords_cfg, judge_cfg, category=None, photo=None
         "Status｜状态": quality["status"] or default_status,
         "Score｜评分": quality["score"],
         "YONO Reason｜为什么适合 YONO": quality["reason"],
-        "标题": quality["title"],
+        "Title｜标题": quality["title"],
         "Content Angle｜内容角度": quality["content_angle"],
         "Visual Tags｜视觉标签": judge["visual_tags"],
         "Mood Tags｜情绪标签": judge["mood_tags"],
     }
+
+
+def build_asset_name(category, alt="", visual_tags=None, reason=""):
+    """生成 7 字以内、偏文艺、能提示使用方向的素材名。"""
+    visual_tags = visual_tags or []
+    text = normalize_text(" ".join([alt, reason, " ".join(map(str, visual_tags))]))
+
+    object_names = [
+        (["penholder", "pen holder", "笔筒"], "笔筒"),
+        (["claylamp", "lamp", "台灯", "灯"], "灯下"),
+        (["deskcorner", "desk corner", "桌角"], "桌角"),
+        (["workmoment", "workspace", "work space", "laptop", "工作"], "桌上"),
+        (["notebooktag", "notebook", "tag", "腰封", "笔记本"], "纸签"),
+        (["sneaker", "shoe", "shoes", "白鞋", "鞋"], "白鞋"),
+        (["ceramic", "vase", "clay", "陶", "花瓶"], "陶器"),
+        (["room", "interior", "home", "屋", "室内"], "屋内"),
+        (["vintage", "classic", "archive", "复古"], "旧影"),
+        (["texture", "material", "wood", "paper", "材质", "纹理"], "材质"),
+        (["packaging", "package", "包装"], "小礼"),
+    ]
+    object_anchor = ""
+    for needles, label in object_names:
+        if any(needle in text for needle in needles):
+            object_anchor = label
+            break
+
+    signal_names = [
+        (["warm light", "warm", "sunlight", "灯", "光"], "暖光"),
+        (["paper texture", "paper", "纸", "便签", "notebook"], "纸上"),
+        (["wooden texture", "wood", "wooden", "木"], "木纹"),
+        (["ceramic", "clay", "陶"], "陶色"),
+        (["vintage", "classic", "old", "复古"], "旧影"),
+        (["desk", "workspace", "桌"], "桌角"),
+        (["home", "room", "interior", "居家"], "屋内"),
+        (["soft color", "neutral", "muted"], "柔色"),
+        (["sneaker", "shoes", "outfit"], "日常"),
+        (["packaging", "gift"], "小礼"),
+        (["music", "record", "vinyl", "tape"], "声纹"),
+        (["texture", "material", "craft", "handmade"], "质感"),
+    ]
+
+    anchor = object_anchor
+    for needles, label in signal_names:
+        if anchor:
+            break
+        if any(needle in text for needle in needles):
+            anchor = label
+            break
+
+    if not anchor:
+        anchor = {
+            "Postcard": "情绪",
+            "Archive": "旧影",
+            "Field Notes": "观察",
+            "OOTD": "日常",
+            "Block": "质感",
+            "Tape": "声纹",
+        }.get(category, "片刻")
+
+    suffix = {
+        "Postcard": "片刻",
+        "Archive": "档案",
+        "Field Notes": "札记",
+        "OOTD": "姿态",
+        "Block": "小物",
+        "Tape": "余音",
+    }.get(category, "素材")
+
+    name = f"{anchor}{suffix}"
+    return name[:7]
 
 
 def evaluate_photo_quality(keyword, category, photo, judge, judge_cfg):
@@ -297,7 +367,7 @@ def build_xiaohongshu_title(category, alt, positive_hits, category_hits):
         "Postcard": f"这张{anchor}感照片，像把情绪轻轻收起来",
         "Archive": f"被这张{anchor}打中：有些设计真的越看越想收藏",
         "Field Notes": f"一个{anchor}细节，突然让我想重新观察日常",
-        "OOTD": f"{anchor}不只是穿搭，是一种生活方式信号",
+        "OOTD": f"这张图里的{anchor}，藏着一种生活方式信号",
         "Block": f"这个{anchor}细节，才是照片真正耐看的地方",
         "Tape": f"这张图有种{anchor}的安静后劲",
     }
@@ -348,6 +418,19 @@ def display_signal(term):
         "minimal": "克制",
         "minimalist": "极简",
         "texture": "纹理",
+        "warm light": "暖光",
+        "soft color": "柔和配色",
+        "playful object": "有趣物件",
+        "everyday scene": "日常场景",
+        "vintage feeling": "复古感",
+        "wooden texture": "木质纹理",
+        "paper texture": "纸张纹理",
+        "small gift": "小礼物感",
+        "childlike detail": "童趣细节",
+        "quiet home": "安静居家",
+        "desk object": "桌面物件",
+        "packaging detail": "包装细节",
+        "handmade feeling": "手作感",
         "paper": "纸感",
         "wooden": "木质",
         "craft": "手作",
@@ -528,10 +611,13 @@ def run(keyword=None, count=5, dry_run=False):
             print(f"  ⏭ Photo {i}: 已存在，跳过")
             continue
 
-        title = (p.get("alt") or "")[:20]
-        photographer = p.get("photographer", "Unknown")
-        asset_name = f"{today_str}_Pexels_{photographer}_{title}"
         judge_fields = get_judge_fields(keyword, keywords_cfg, judge_cfg, category=day_category, photo=p)
+        asset_name = build_asset_name(
+            judge_fields["Category｜分类"],
+            alt=p.get("alt") or "",
+            visual_tags=judge_fields.get("Visual Tags｜视觉标签", []),
+            reason=judge_fields.get("YONO Reason｜为什么适合 YONO", ""),
+        )
 
         if dry_run:
             print(
@@ -539,8 +625,8 @@ def run(keyword=None, count=5, dry_run=False):
                 f"[{category} ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}]"
             )
             print(f"     {judge_fields['YONO Reason｜为什么适合 YONO']}")
-            if judge_fields.get("标题"):
-                print(f"     标题：{judge_fields['标题']}")
+            if judge_fields.get("Title｜标题"):
+                print(f"     标题：{judge_fields['Title｜标题']}")
             if judge_fields.get("Content Angle｜内容角度"):
                 print(f"     内容角度：{judge_fields['Content Angle｜内容角度']}")
             success_count += 1

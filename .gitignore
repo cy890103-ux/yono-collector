@@ -14,5 +14,8 @@ __pycache__/
 # macOS 垃圾文件
 .DS_Store
 
+# WorkBuddy 本地状态目录（含 session 日志等，不适合上传）
+.workbuddy/
+
 # 临时图片
 *.tmp
