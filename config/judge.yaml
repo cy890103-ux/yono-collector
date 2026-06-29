@@ -100,7 +100,7 @@ modules:
     score: 3    # 氛围型 → Usable
 
 # 新记录的默认状态
-default_status: "Raw｜未判断"
+default_status: "Maybe｜待定"
 
 
 # 图片质量判断模型
@@ -248,9 +248,8 @@ available_mood_tags:
   - save-worthy｜值得收藏
 
 available_status:
-  - Raw｜未判断
-  - Save｜保存
   - Maybe｜待定
+  - Save｜保存
   - Reject｜放弃
   - Used｜已使用
 

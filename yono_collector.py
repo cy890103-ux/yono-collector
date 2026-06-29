@@ -108,7 +108,7 @@ def get_judge_fields(keyword, keywords_cfg, judge_cfg, category=None, photo=None
 
     modules = judge_cfg.get("modules", {})
     judge = modules.get(category, modules.get("Tape", {}))
-    default_status = judge_cfg.get("default_status", "Raw｜未判断")
+    default_status = judge_cfg.get("default_status", "Maybe｜待定")
     quality = evaluate_photo_quality(keyword, category, photo, judge, judge_cfg)
 
     return {
@@ -128,7 +128,7 @@ def get_music_judge_fields(keyword, keywords_cfg, judge_cfg, track, category="Ta
     """根据音乐元数据生成 Tape 标准字段。"""
     modules = judge_cfg.get("modules", {})
     judge = modules.get(category, modules.get("Tape", {}))
-    default_status = judge_cfg.get("default_status", "Raw｜未判断")
+    default_status = judge_cfg.get("default_status", "Maybe｜待定")
     quality = evaluate_music_quality(keyword, track, judge, judge_cfg)
 
     return {
@@ -218,7 +218,7 @@ def evaluate_photo_quality(keyword, category, photo, judge, judge_cfg):
     if not model.get("enabled", True) or not photo:
         return {
             "score": base_score,
-            "status": judge_cfg.get("default_status", "Raw｜未判断"),
+            "status": judge_cfg.get("default_status", "Maybe｜待定"),
             "reason": judge.get("yono_reason", ""),
             "title": "",
             "content_angle": "",
@@ -295,10 +295,10 @@ def evaluate_photo_quality(keyword, category, photo, judge, judge_cfg):
     )
     # 内容角度：始终生成，帮助判断
     content_angle = build_xiaohongshu_content_angle(category, alt, reason, curiosity_point)
-    # 新建记录状态统一 Raw｜未判断，由用户手动改为 Save 后再生成 Title 和发布内容
+    # 新建记录默认 Maybe｜待定，改为 Save 后生成 Title 和发布内容
     return {
         "score": score,
-        "status": "Raw｜未判断",
+        "status": "Maybe｜待定",
         "reason": reason,
         "title": "",
         "content_angle": content_angle,
@@ -377,10 +377,10 @@ def evaluate_music_quality(keyword, track, judge, judge_cfg):
     )
     # 内容角度始终生成
     content_angle = build_music_content_angle(track, reason, curiosity_point)
-    # 新建记录状态统一 Raw｜未判断
+    # 新建记录默认 Maybe｜待定
     return {
         "score": score,
-        "status": "Raw｜未判断",
+        "status": "Maybe｜待定",
         "reason": reason,
         "title": "",
         "content_angle": content_angle,
@@ -406,7 +406,7 @@ def status_for_score(score, model, judge_cfg):
     return (
         mapping.get(score)
         or mapping.get(str(score))
-        or judge_cfg.get("default_status", "Raw｜未判断")
+        or judge_cfg.get("default_status", "Maybe｜待定")
     )
 
 
@@ -1427,7 +1427,7 @@ def run_music_collection(keyword, count, dry_run, token, feishu_creds, keywords_
             track,
             category="Tape",
         )
-        judge_fields["Status｜状态"] = judge_cfg.get("default_status", "Raw｜未判断")
+        judge_fields["Status｜状态"] = judge_cfg.get("default_status", "Maybe｜待定")
         judge_fields["Title｜标题"] = ""
         judge_fields["Content Angle｜内容角度"] = ""
         asset_name = build_music_asset_name(track)
@@ -1589,7 +1589,7 @@ def backfill_records():
 
         # 生成评判字段
         judge = modules.get(category, modules.get("Tape", {}))
-        default_status = judge_cfg.get("default_status", "Raw｜未判断")
+        default_status = judge_cfg.get("default_status", "Maybe｜待定")
 
         update_fields = {}
         for f in FIELDS_TO_BACKFILL:
