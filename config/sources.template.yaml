@@ -1,0 +1,19 @@
+# ─── sources.template.yaml ───
+# 这是模板文件，不含真实密钥。
+# 实际使用时，复制这个文件为 sources.yaml，填入你的真实 Key。
+
+# Pexels 图源
+pexels:
+  api_key: "你的_Pexels_API_Key"      # ← 填入真实 Key
+  base_url: "https://api.pexels.com/v1/search"
+  orientation: "squarish"
+  image_size: "large"
+
+# 飞书连接
+feishu:
+  app_id: "你的_飞书_App_ID"          # ← 填入真实 App ID
+  app_secret: "你的_飞书_App_Secret"  # ← 填入真实 App Secret
+  app_token: "你的_飞书_App_Token"    # ← 填入真实 App Token
+  table_id: "你的_飞书_Table_ID"      # ← 填入真实 Table ID
+  upload_endpoint: "https://open.feishu.cn/open-apis/drive/v1/medias/upload_all"
+  upload_parent_type: "bitable_file"

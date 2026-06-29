@@ -1,0 +1,78 @@
+# ─── keywords.yaml ───
+# 搜索关键词 + 分类映射
+# 改这里 = 改每天搜什么图、归到哪个类
+# 不用动脚本代码
+
+# 每天轮换的关键词（7组，周一→周日）
+# 格式: 关键词: 对应分类
+daily_rotation:
+  monday:    { keyword: "sneaker design minimal",      category: "OOTD" }
+  tuesday:   { keyword: "urban street fashion mood",   category: "OOTD" }
+  wednesday: { keyword: "vintage interior details",    category: "Archive" }
+  thursday:  { keyword: "craft texture material",      category: "Block" }
+  friday:    { keyword: "cozy lifestyle still life",   category: "Tape" }
+  saturday:  { keyword: "minimalist product design",   category: "Block" }
+  sunday:    { keyword: "warm aesthetic home",         category: "Postcard" }
+
+# 自定义关键词时的精确映射（--keyword 参数用）
+custom_mapping:
+  "warm aesthetic home":         "Postcard"
+  "sneaker design minimal":      "OOTD"
+  "urban street fashion mood":   "OOTD"
+  "vintage interior details":    "Archive"
+  "craft texture material":      "Block"
+  "cozy lifestyle still life":   "Tape"
+  "minimalist product design":   "Block"
+
+# 模糊匹配规则：关键词里包含这些词 → 归到对应分类
+# 优先级：精确匹配 > 模糊匹配 > 兜底(Tape)
+fuzzy_match:
+  Postcard:
+    - home
+    - aesthetic
+    - warm
+    - cozy
+    - interior
+    - living
+    - decor
+  Archive:
+    - vintage
+    - retro
+    - history
+    - heritage
+    - classic
+    - archive
+  Field Notes:
+    - travel
+    - outdoor
+    - nature
+    - landscape
+    - adventure
+    - trip
+    - 灵感
+  OOTD:
+    - sneaker
+    - fashion
+    - street
+    - outfit
+    - shoes
+    - wear
+    - style
+  Block:
+    - design
+    - texture
+    - material
+    - craft
+    - minimalist
+    - product
+    - pattern
+  Tape:
+    - still life
+    - daily
+    - mood
+    - lifestyle
+    - moment
+    - random
+
+# 兜底分类（匹配不到任何关键词时的默认分类）
+fallback_category: "Tape"

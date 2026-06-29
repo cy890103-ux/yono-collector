@@ -1,0 +1,139 @@
+# ─── judge.yaml ───
+# OS.md 六大模块的评判标准
+# 改这里 = 改评分、原因、标签（不动脚本代码）
+#
+# Score: 1=Not YONO, 2=Weak, 3=Usable, 4=Strong, 5=Highly YONO
+# Visual Tags / Mood Tags: 必须是飞书表格里的选项，不能随便写
+
+modules:
+  Postcard:
+    description: "分享情绪, 分享一句值得收藏的话"
+    proportion: "30%"
+    yono_reason: "分享情绪与值得收藏的瞬间，YONO 的温暖核心。"
+    content_angle: "情绪卡片：用一句值得收藏的话，配一张温暖画面。"
+    visual_tags:
+      - "warm light"
+      - "soft color"
+      - "quiet home"
+    mood_tags:
+      - "warm｜温暖"
+      - "calm｜平静"
+      - "save-worthy｜值得收藏"
+    score: 4    # Postcard 权重最高 → Strong
+
+  Archive:
+    description: "品牌, 人物, 建筑, 艺术, 摄影 — 值得长期保存的设计"
+    proportion: "20%"
+    yono_reason: "值得长期保存的设计——品牌、人物、建筑、艺术、摄影。"
+    content_angle: "档案收藏：记录值得保存的设计、人物与故事。"
+    visual_tags:
+      - "vintage feeling"
+      - "paper texture"
+      - "packaging detail"
+    mood_tags:
+      - "curious｜好奇"
+      - "nostalgic｜怀旧"
+      - "save-worthy｜值得收藏"
+    score: 4    # 收藏价值高 → Strong
+
+  Field Notes:
+    description: "观察, 记录, 灵感, 品牌思考, AI, 生活"
+    proportion: "15%"
+    yono_reason: "观察、记录灵感与品牌思考，AI 与生活的交汇点。"
+    content_angle: "田野笔记：观察记录灵感，品牌思考与 AI 生活。"
+    visual_tags:
+      - "desk object"
+      - "everyday scene"
+      - "paper texture"
+    mood_tags:
+      - "curious｜好奇"
+      - "useful｜有用"
+    score: 3    # 观察型 → Usable
+
+  OOTD:
+    description: "穿搭, 人与产品, 生活方式"
+    proportion: "15%"
+    yono_reason: "穿搭、人与产品、生活方式——YONO 的日常表达。"
+    content_angle: "穿搭日记：人与产品的日常，生活方式表达。"
+    visual_tags:
+      - "everyday scene"
+      - "playful object"
+      - "packaging detail"
+    mood_tags:
+      - "playful｜有趣"
+      - "useful｜有用"
+    score: 3    # 日常型 → Usable
+
+  Block:
+    description: "产品, 材质, 细节, Vintage, 设计商品"
+    proportion: "10%"
+    yono_reason: "产品、材质、细节、Vintage、设计商品——YONO 的质感追求。"
+    content_angle: "材质方块：产品细节、材质纹理与设计商品。"
+    visual_tags:
+      - "wooden texture"
+      - "paper texture"
+      - "handmade feeling"
+      - "packaging detail"
+    mood_tags:
+      - "curious｜好奇"
+      - "useful｜有用"
+      - "nostalgic｜怀旧"
+    score: 3    # 质感型 → Usable
+
+  Tape:
+    description: "音乐, 歌单, 声音, 电影原声 — 值得听见的"
+    proportion: "10%"
+    yono_reason: "音乐、歌单、声音、电影原声——分享值得听见的。"
+    content_angle: "音乐磁带：分享值得听见的音乐与声音。"
+    visual_tags:
+      - "warm light"
+      - "soft color"
+      - "small gift"
+    mood_tags:
+      - "calm｜平静"
+      - "nostalgic｜怀旧"
+      - "gentle｜柔和"
+    score: 3    # 氛围型 → Usable
+
+# 新记录的默认状态
+default_status: "Raw｜未判断"
+
+# 可用的飞书选项值（参考，改标签时不要超出这些范围）
+available_visual_tags:
+  - warm light
+  - soft color
+  - playful object
+  - everyday scene
+  - vintage feeling
+  - wooden texture
+  - paper texture
+  - small gift
+  - childlike detail
+  - quiet home
+  - desk object
+  - packaging detail
+  - handmade feeling
+
+available_mood_tags:
+  - warm｜温暖
+  - calm｜平静
+  - curious｜好奇
+  - playful｜有趣
+  - nostalgic｜怀旧
+  - gentle｜柔和
+  - useful｜有用
+  - save-worthy｜值得收藏
+
+available_status:
+  - Raw｜未判断
+  - Save｜保存
+  - Maybe｜待定
+  - Reject｜放弃
+  - Used｜已使用
+
+available_score:
+  - 1   # Not YONO
+  - 2   # Weak
+  - 3   # Usable
+  - 4   # Strong
+  - 5   # Highly YONO
