@@ -4,78 +4,81 @@
 # 不用动脚本代码
 
 # 每天轮换的关键词（7组，周一→周日）
-# 格式: 关键词: 对应分类
+# Block 和 OOTD 由用户手动上传真实图片，不参与自动抓取
+# 自动抓取仅限：Postcard / Archive / Field Notes / Tape
 daily_rotation:
-  monday:    { keyword: "sneaker design minimal",      category: "OOTD" }
-  tuesday:   { keyword: "urban street fashion mood",   category: "OOTD" }
-  wednesday: { keyword: "vintage interior details",    category: "Archive" }
-  thursday:  { keyword: "craft texture material",      category: "Block" }
-  friday:    { keyword: "cozy lifestyle still life",   category: "Tape" }
-  saturday:  { keyword: "minimalist product design",   category: "Block" }
-  sunday:    { keyword: "warm aesthetic home",         category: "Postcard" }
+  monday:    { keyword: "vintage brand design photography",   category: "Archive" }
+  tuesday:   { keyword: "warm quiet morning light emotion",   category: "Postcard" }
+  wednesday: { keyword: "architectural art heritage photography", category: "Archive" }
+  thursday:  { keyword: "notebook desk inspiration journal",  category: "Field Notes" }
+  friday:    { keyword: "ambient indie soundtrack",           category: "Tape" }
+  saturday:  { keyword: "soft emotional everyday moment",    category: "Postcard" }
+  sunday:    { keyword: "creative workspace observation life", category: "Field Notes" }
 
 # 自定义关键词时的精确映射（--keyword 参数用）
 custom_mapping:
-  "warm aesthetic home":         "Postcard"
-  "sneaker design minimal":      "OOTD"
-  "urban street fashion mood":   "OOTD"
-  "vintage interior details":    "Archive"
-  "craft texture material":      "Block"
-  "cozy lifestyle still life":   "Tape"
-  "minimalist product design":   "Block"
+  # Postcard — 情绪、一句话、值得收藏的瞬间
+  "warm quiet morning light emotion":   "Postcard"
+  "soft emotional everyday moment":     "Postcard"
+  "gentle life still moment":           "Postcard"
+  # Archive — 品牌、人物、建筑、艺术、摄影
+  "vintage brand design photography":   "Archive"
+  "architectural art heritage photography": "Archive"
+  "classic design archive":             "Archive"
+  # Field Notes — 观察、记录、灵感、品牌思考、生活
+  "notebook desk inspiration journal":  "Field Notes"
+  "creative workspace observation life": "Field Notes"
+  "daily observation brand thinking":   "Field Notes"
+  # Tape — 音乐、歌单、声音、电影原声
+  "ambient indie soundtrack":           "Tape"
+  "quiet music playlist":               "Tape"
+  "film soundtrack":                    "Tape"
 
 # 模糊匹配规则：关键词里包含这些词 → 归到对应分类
-# 优先级：精确匹配 > 模糊匹配 > 兜底(Tape)
+# 优先级：精确匹配 > 模糊匹配 > 兜底
+# Block 和 OOTD 不在模糊匹配中，防止误触发自动抓取
 fuzzy_match:
   Postcard:
-    - home
-    - aesthetic
-    - warm
+    - emotion
+    - moment
+    - morning
+    - gentle
     - cozy
-    - interior
-    - living
-    - decor
+    - warm
+    - quiet
+    - soft
+    - aesthetic
   Archive:
     - vintage
     - retro
-    - history
     - heritage
     - classic
     - archive
+    - architecture
+    - art
+    - brand
+    - photography
   Field Notes:
-    - travel
-    - outdoor
-    - nature
-    - landscape
-    - adventure
-    - trip
+    - notebook
+    - journal
+    - observation
+    - inspiration
+    - workspace
+    - desk
+    - thinking
+    - life
     - 灵感
-  OOTD:
-    - sneaker
-    - fashion
-    - street
-    - outfit
-    - shoes
-    - wear
-    - style
-  Block:
-    - design
-    - texture
-    - material
-    - craft
-    - handmade
-    - ceramic
-    - object
-    - minimalist
-    - product
-    - pattern
   Tape:
-    - still life
-    - daily
-    - mood
-    - lifestyle
-    - moment
-    - random
+    - music
+    - song
+    - playlist
+    - soundtrack
+    - ambient
+    - indie
+    - acoustic
+    - piano
+    - jazz
+    - sound
 
-# 兜底分类（匹配不到任何关键词时的默认分类）
-fallback_category: "Tape"
+# 兜底分类（匹配不到任何关键词时默认进 Archive，不触发音乐流程）
+fallback_category: "Archive"

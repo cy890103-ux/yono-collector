@@ -6,7 +6,7 @@ YONO Collector — Pexels → 飞书 Asset 表格
 配置全部从 config/ 目录的 YAML 文件读取：
   config/keywords.yaml  → 搜索关键词、分类映射、模糊匹配规则
   config/judge.yaml     → 六大模块的评分、原因、标签标准
-  config/sources.yaml   → Pexels API Key、飞书连接信息
+  config/sources.yaml   → Pexels / Music 来源、飞书连接信息
 
 改配置只改 YAML，不用动这个脚本。
 
@@ -25,6 +25,7 @@ import os
 import sys
 import argparse
 import tempfile
+import mimetypes
 import yaml
 
 # ─── 配置文件路径 ───
@@ -57,6 +58,18 @@ def get_pexels_config(sources_cfg):
         "base_url": sources_cfg["pexels"]["base_url"],
         "orientation": sources_cfg["pexels"]["orientation"],
         "image_size": sources_cfg["pexels"]["image_size"],
+    }
+
+
+def get_music_config(sources_cfg):
+    """从配置获取音乐搜索参数。默认使用无需密钥的 iTunes Search API。"""
+    music = sources_cfg.get("music", {})
+    return {
+        "provider": music.get("provider", "itunes"),
+        "base_url": music.get("base_url", "https://itunes.apple.com/search"),
+        "country": music.get("country", "US"),
+        "media": music.get("media", "music"),
+        "entity": music.get("entity", "song"),
     }
 
 
@@ -104,6 +117,27 @@ def get_judge_fields(keyword, keywords_cfg, judge_cfg, category=None, photo=None
         "Score｜评分": quality["score"],
         "YONO Reason｜为什么适合 YONO": quality["reason"],
         "Title｜标题": quality["title"],
+        **({"Post Content｜发布内容": quality["post_content"]} if quality["post_content"] else {}),
+        "Content Angle｜内容角度": quality["content_angle"],
+        "Visual Tags｜视觉标签": judge["visual_tags"],
+        "Mood Tags｜情绪标签": judge["mood_tags"],
+    }
+
+
+def get_music_judge_fields(keyword, keywords_cfg, judge_cfg, track, category="Tape"):
+    """根据音乐元数据生成 Tape 标准字段。"""
+    modules = judge_cfg.get("modules", {})
+    judge = modules.get(category, modules.get("Tape", {}))
+    default_status = judge_cfg.get("default_status", "Raw｜未判断")
+    quality = evaluate_music_quality(keyword, track, judge, judge_cfg)
+
+    return {
+        "Category｜分类": category,
+        "Status｜状态": quality["status"] or default_status,
+        "Score｜评分": quality["score"],
+        "YONO Reason｜为什么适合 YONO": quality["reason"],
+        "Title｜标题": quality["title"],
+        **({"Post Content｜发布内容": quality["post_content"]} if quality["post_content"] else {}),
         "Content Angle｜内容角度": quality["content_angle"],
         "Visual Tags｜视觉标签": judge["visual_tags"],
         "Mood Tags｜情绪标签": judge["mood_tags"],
@@ -197,6 +231,7 @@ def evaluate_photo_quality(keyword, category, photo, judge, judge_cfg):
             "reason": judge.get("yono_reason", ""),
             "title": "",
             "content_angle": "",
+            "post_content": "",
         }
 
     alt = str(photo.get("alt") or "").strip()
@@ -260,7 +295,6 @@ def evaluate_photo_quality(keyword, category, photo, judge, judge_cfg):
         score = min(score, 2)
 
     score = max(1, min(5, score))
-    status = status_for_score(score, model, judge_cfg)
     curiosity_point = build_curiosity_point(category, alt, positive_hits, category_hits)
     reason = build_selection_reason(
         judge.get("yono_reason", ""),
@@ -268,23 +302,98 @@ def evaluate_photo_quality(keyword, category, photo, judge, judge_cfg):
         score,
         curiosity_point
     )
-    title = ""
-    content_angle = ""
-    if status == "Save｜保存":
-        title = build_xiaohongshu_title(category, alt, positive_hits, category_hits)
-        content_angle = build_xiaohongshu_content_angle(
-            category,
-            alt,
-            reason,
-            curiosity_point
-        )
-
+    # 内容角度：始终生成，帮助判断
+    content_angle = build_xiaohongshu_content_angle(category, alt, reason, curiosity_point)
+    # 新建记录状态统一 Raw｜未判断，由用户手动改为 Save 后再生成 Title 和发布内容
     return {
         "score": score,
-        "status": status,
+        "status": "Raw｜未判断",
         "reason": reason,
-        "title": title,
+        "title": "",
         "content_angle": content_angle,
+        "post_content": "",
+    }
+
+
+def evaluate_music_quality(keyword, track, judge, judge_cfg):
+    """按单首歌的元数据独立评分。"""
+    model = judge_cfg.get("quality_model", {})
+    base_score = int(judge.get("score", 3))
+    track_name = track.get("trackName", "")
+    artist = track.get("artistName", "")
+    album = track.get("collectionName", "")
+    genre = track.get("primaryGenreName", "")
+    text = normalize_text(" ".join([keyword or "", track_name, artist, album, genre]))
+
+    positive_terms = model.get("music_positive_signals", [
+        "ambient", "indie", "acoustic", "piano", "jazz", "soundtrack",
+        "folk", "soul", "chill", "dream", "quiet", "soft", "calm",
+        "instrumental", "lofi", "classic", "cinematic",
+    ])
+    anti_terms = model.get("music_anti_signals", [
+        "explicit", "karaoke", "workout", "party", "dance remix",
+        "club", "christmas", "kids", "comedy",
+    ])
+
+    positive_hits = matched_terms(text, positive_terms)
+    anti_hits = matched_terms(text, anti_terms)
+
+    score = base_score
+    evidence = []
+
+    if track_name and artist:
+        evidence.append(f"歌曲：{track_name} — {artist}")
+    else:
+        score -= 1
+        evidence.append("歌曲或艺人信息不完整")
+
+    if album:
+        evidence.append(f"专辑：{album}")
+    if genre:
+        evidence.append(f"类型：{genre}")
+
+    if track.get("previewUrl"):
+        score += 1
+        evidence.append("有试听片段，适合快速判断是否收藏")
+    else:
+        score -= 1
+        evidence.append("缺少试听片段")
+
+    if track.get("artworkUrl100"):
+        score += 1
+        evidence.append("有封面，可直接用于素材库识别")
+
+    if positive_hits:
+        score += 1
+        evidence.append(f"Tape 信号：{', '.join(positive_hits[:4])}")
+    if anti_hits:
+        score -= min(2, len(anti_hits))
+        evidence.append(f"反向信号：{', '.join(anti_hits[:3])}")
+
+    if not track.get("previewUrl"):
+        score = min(score, 3)
+    if anti_hits:
+        score = min(score, 3)
+
+    score = max(1, min(5, score))
+    curiosity_point = build_music_curiosity_point(track, positive_hits)
+    reason = build_selection_reason(
+        judge.get("yono_reason", ""),
+        evidence,
+        score,
+        curiosity_point,
+        subject="这首歌",
+    )
+    # 内容角度始终生成
+    content_angle = build_music_content_angle(track, reason, curiosity_point)
+    # 新建记录状态统一 Raw｜未判断
+    return {
+        "score": score,
+        "status": "Raw｜未判断",
+        "reason": reason,
+        "title": "",
+        "content_angle": content_angle,
+        "post_content": "",
     }
 
 
@@ -310,13 +419,13 @@ def status_for_score(score, model, judge_cfg):
     )
 
 
-def build_selection_reason(base_reason, evidence, score, curiosity_point):
+def build_selection_reason(base_reason, evidence, score, curiosity_point, subject="这张图"):
     verdict = {
-        5: "筛选理由：这张图高度值得保留。",
-        4: "筛选理由：这张图适合进入素材库。",
-        3: "筛选理由：这张图有可用价值，但需要人工复核。",
-        2: "筛选理由：这张图 YONO 信号偏弱，暂不建议保留。",
-        1: "筛选理由：这张图不符合当前筛选标准。",
+        5: f"筛选理由：{subject}高度值得保留。",
+        4: f"筛选理由：{subject}适合进入素材库。",
+        3: f"筛选理由：{subject}有可用价值，但需要人工复核。",
+        2: f"筛选理由：{subject} YONO 信号偏弱，暂不建议保留。",
+        1: f"筛选理由：{subject}不符合当前筛选标准。",
     }.get(score, "已按 YONO 标准评估。")
     evidence_text = "；".join(evidence[:4])
     curiosity_text = f"好奇心点：{curiosity_point}" if curiosity_point else "好奇心点：暂不明确"
@@ -381,6 +490,44 @@ def build_xiaohongshu_title(category, alt, positive_hits, category_hits):
     return title[:60]
 
 
+def build_music_curiosity_point(track, positive_hits):
+    track_name = track.get("trackName", "这首歌")
+    artist = track.get("artistName", "")
+    genre = track.get("primaryGenreName", "")
+    signal = display_signal(positive_hits[0]) if positive_hits else "情绪后劲"
+    artist_text = f"{artist} 的" if artist else ""
+    genre_text = f"，它被归在 {genre}，但听感可能比类型标签更细" if genre else ""
+    return f"{artist_text}{track_name} 的好奇心点在于：它不是只提供背景声，而是带着{signal}线索{genre_text}。"
+
+
+def build_music_title(track, positive_hits):
+    track_name = track.get("trackName", "这首歌")
+    artist = track.get("artistName", "")
+    signal = display_signal(positive_hits[0]) if positive_hits else "安静后劲"
+    if artist:
+        title = f"今天想存下 {artist} 的这首歌：有种{signal}"
+    else:
+        title = f"今天想存下这首歌：有种{signal}"
+    if track_name and len(title) < 48:
+        title = f"{title}｜{track_name}"
+    return title[:60]
+
+
+def build_music_content_angle(track, reason, curiosity_point):
+    track_name = track.get("trackName", "这首歌")
+    artist = track.get("artistName", "")
+    album = track.get("collectionName", "")
+    genre = track.get("primaryGenreName", "")
+    subject = f"{track_name} — {artist}" if artist else track_name
+    album_text = f" 来自《{album}》。" if album else ""
+    genre_text = f" 类型标签是 {genre}，" if genre else ""
+    return (
+        f"音乐分享切入：把 {subject} 当作一条可收藏的声音素材。"
+        f"{album_text}{genre_text}重点不是介绍歌曲资料，而是写它适合出现的生活场景、情绪温度和画面感。"
+        f" {curiosity_point} {reason[:120]}"
+    )
+
+
 def build_xiaohongshu_content_angle(category, alt, reason, curiosity_point):
     """只给 Save 素材生成小红书选题角度。"""
     category_prompt = {
@@ -394,6 +541,101 @@ def build_xiaohongshu_content_angle(category, alt, reason, curiosity_point):
 
     alt_text = f"画面依据：{alt[:90]}。" if alt else ""
     return f"{category_prompt} {alt_text}{curiosity_point}".strip()
+
+
+def build_xiaohongshu_post(category, title, alt, curiosity_point, positive_hits, category_hits, reason):
+    """生成完整的小红书正文 + 标签，仅 Save 素材调用。"""
+    # 开头钩子 — 用好奇心点改写成疑问或反差句
+    hook_templates = {
+        "Postcard":    "有些图，不知道为什么，就是让人想存下来。",
+        "Archive":     "这个东西存在了很久，但今天才第一次觉得它值得被认真看一眼。",
+        "Field Notes": "日常里总有一些细节，你不记录就会忘掉。",
+        "OOTD":        "有时候一件东西的存在方式，比它本身更耐看。",
+        "Block":       "不是所有好东西都需要很贵，但它们都需要被认真对待。",
+        "Tape":        "有些声音不适合放进歌单，更适合放进生活里。",
+    }
+    hook = hook_templates.get(category, "有些东西值得被好好看一眼。")
+
+    # 主体 — 从 alt 描述和分类角度展开
+    body_templates = {
+        "Postcard":    "把它存下来不是因为它有多特别，而是因为它刚好说出了某个你说不清楚的感受。",
+        "Archive":     "设计到这个程度，已经不只是好看，而是有态度、有立场、有时间感。",
+        "Field Notes": "这种场景每天都在发生，但大多数时候我们都走过去了，没有停下来想。",
+        "OOTD":        "穿搭从来不只是穿什么，而是你怎么把东西和生活放在一起。",
+        "Block":       "材质、细节、结构——这些东西才是真正决定一件物品值不值得拥有的东西。",
+        "Tape":        "不是每首歌都适合大声放，有些歌更适合用来填满某个安静的下午。",
+    }
+    body = body_templates.get(category, "YONO 原则：只要值得，就收下。")
+
+    # 好奇心点段落
+    curiosity_para = curiosity_point if curiosity_point else ""
+
+    # 结尾 CTA
+    cta_templates = {
+        "Postcard":    "你有没有也存了某张说不清楚为什么喜欢的图？",
+        "Archive":     "这种东西你会存进哪个收藏夹？",
+        "Field Notes": "今天你注意到了什么？",
+        "OOTD":        "你最近有没有找到一件特别对的东西？",
+        "Block":       "你有没有一个只放好东西的收藏夹？",
+        "Tape":        "你有没有一首歌，不放进歌单，但总在某个时刻想起来？",
+    }
+    cta = cta_templates.get(category, "你会把它存下来吗？")
+
+    # 标签 — 分类固定标签 + 信号词标签
+    base_tags = {
+        "Postcard":    ["#情绪收藏", "#YONO", "#值得收藏", "#生活美学"],
+        "Archive":     ["#设计档案", "#YONO", "#值得保存", "#好设计"],
+        "Field Notes": ["#日常观察", "#YONO", "#生活灵感", "#品牌思考"],
+        "OOTD":        ["#穿搭日记", "#YONO", "#生活方式", "#人与物"],
+        "Block":       ["#材质细节", "#YONO", "#好物", "#设计商品"],
+        "Tape":        ["#音乐分享", "#YONO", "#歌单", "#声音美学"],
+    }.get(category, ["#YONO", "#收藏"])
+
+    signal_tags = [f"#{display_signal(t)}" for t in (positive_hits + category_hits)[:3] if display_signal(t) != t]
+    seen = set(base_tags)
+    dedup_signal = [t for t in signal_tags if t not in seen and not seen.add(t)]
+    all_tags = base_tags + dedup_signal
+
+    parts = [hook, "", body]
+    if curiosity_para:
+        parts += ["", curiosity_para]
+    parts += ["", cta, "", " ".join(all_tags)]
+    return "\n".join(parts)
+
+
+def build_xiaohongshu_music_post(track, title, curiosity_point, positive_hits, reason):
+    """生成音乐类（Tape）完整小红书正文 + 标签。"""
+    track_name = track.get("trackName", "这首歌")
+    artist = track.get("artistName", "")
+    album = track.get("collectionName", "")
+    genre = track.get("primaryGenreName", "")
+
+    subject = f"{track_name}（{artist}）" if artist else track_name
+    hook = f"今天想认真分享一首歌：{subject}。"
+
+    body_parts = []
+    if album:
+        body_parts.append(f"它来自《{album}》。")
+    if genre:
+        body_parts.append(f"类型标签是 {genre}，但听感比这个词更细腻。")
+    body_parts.append("不是为了推荐，只是觉得它值得被认真听一次。")
+    body = " ".join(body_parts)
+
+    curiosity_para = curiosity_point if curiosity_point else ""
+
+    signal_words = [display_signal(t) for t in positive_hits[:2] if display_signal(t) != t]
+    mood_desc = "、".join(signal_words) if signal_words else "安静后劲"
+    cta = f"如果你也喜欢带着{mood_desc}的音乐，可以存下来慢慢听。"
+
+    base_tags = ["#音乐分享", "#YONO", "#歌单推荐", "#声音美学", "#Tape"]
+    signal_tags = [f"#{display_signal(t)}" for t in positive_hits[:3] if display_signal(t) != t]
+    all_tags = base_tags + [t for t in signal_tags if t not in base_tags]
+
+    parts = [hook, "", body]
+    if curiosity_para:
+        parts += ["", curiosity_para]
+    parts += ["", cta, "", " ".join(all_tags)]
+    return "\n".join(parts)
 
 
 def category_label(category):
@@ -431,6 +673,19 @@ def display_signal(term):
         "desk object": "桌面物件",
         "packaging detail": "包装细节",
         "handmade feeling": "手作感",
+        "ambient": "氛围",
+        "indie": "独立感",
+        "acoustic": "原声",
+        "piano": "钢琴",
+        "jazz": "爵士",
+        "soundtrack": "电影感",
+        "folk": "民谣",
+        "soul": "灵魂乐",
+        "chill": "松弛",
+        "dream": "梦感",
+        "instrumental": "器乐",
+        "lofi": "低保真",
+        "cinematic": "电影感",
         "paper": "纸感",
         "wooden": "木质",
         "craft": "手作",
@@ -492,6 +747,140 @@ def get_feishu_token(feishu_creds):
     return data["tenant_access_token"]
 
 
+def get_unsplash_config(sources_cfg):
+    return sources_cfg.get("unsplash", {})
+
+
+def get_museum_config(sources_cfg):
+    return sources_cfg.get("museums", {})
+
+
+def search_museum(keyword, count, museum_cfg):
+    """搜博物馆藏品。依次尝试 Met → AIC，汇总后返回统一格式列表。
+    统一格式：{title, artist, medium, department, image_url, source_url, source_name}
+    """
+    if not museum_cfg.get("enabled"):
+        return []
+
+    results = []
+
+    met_cfg = museum_cfg.get("met", {})
+    if met_cfg.get("enabled"):
+        results.extend(_search_met(keyword, count * 3, met_cfg))
+
+    aic_cfg = museum_cfg.get("aic", {})
+    if aic_cfg.get("enabled") and len(results) < count:
+        results.extend(_search_aic(keyword, count * 3, aic_cfg))
+
+    return results
+
+
+def _search_met(keyword, limit, met_cfg):
+    try:
+        r = requests.get(
+            met_cfg["search_url"],
+            params={"q": keyword, "hasImages": True, "isPublicDomain": True},
+            timeout=15,
+        )
+        ids = r.json().get("objectIDs") or []
+        items = []
+        for oid in ids[:limit]:
+            try:
+                obj = requests.get(f"{met_cfg['object_url']}/{oid}", timeout=10).json()
+            except Exception:
+                continue
+            img = obj.get("primaryImage", "")
+            if not img:
+                continue
+            items.append({
+                "title": obj.get("title", ""),
+                "artist": obj.get("artistDisplayName", ""),
+                "medium": obj.get("medium", ""),
+                "department": obj.get("department", ""),
+                "image_url": img,
+                "source_url": obj.get("objectURL", ""),
+                "source_name": "The Metropolitan Museum of Art",
+            })
+            if len(items) >= limit:
+                break
+        return items
+    except Exception as e:
+        print(f"  ⚠️ Met API 异常: {e}")
+        return []
+
+
+def _search_aic(keyword, limit, aic_cfg):
+    try:
+        r = requests.get(
+            aic_cfg["search_url"],
+            params={
+                "q": keyword,
+                "fields": "id,title,artist_display,image_id,api_link,medium_display,department_title",
+                "limit": limit,
+            },
+            timeout=15,
+        )
+        hits = r.json().get("data", [])
+        items = []
+        base = aic_cfg.get("image_base_url", "https://www.artic.edu/iiif/2")
+        for h in hits:
+            if not h.get("image_id"):
+                continue
+            items.append({
+                "title": h.get("title", ""),
+                "artist": h.get("artist_display", "").split("\n")[0],
+                "medium": h.get("medium_display", ""),
+                "department": h.get("department_title", ""),
+                "image_url": f"{base}/{h['image_id']}/full/843,/0/default.jpg",
+                "source_url": h.get("api_link", "").replace("/api/v1/artworks/", "/artworks/"),
+                "source_name": "Art Institute of Chicago",
+            })
+        return items
+    except Exception as e:
+        print(f"  ⚠️ AIC API 异常: {e}")
+        return []
+
+
+def search_unsplash(keyword, count, unsplash_cfg):
+    """搜索 Unsplash 图片，返回和 Pexels 兼容的格式。"""
+    api_key = unsplash_cfg.get("api_key", "")
+    if not api_key:
+        return []
+    try:
+        resp = requests.get(
+            unsplash_cfg.get("base_url", "https://api.unsplash.com/search/photos"),
+            params={
+                "query": keyword,
+                "per_page": count,
+                "orientation": unsplash_cfg.get("orientation", "squarish"),
+            },
+            headers={"Authorization": f"Client-ID {api_key}"},
+            timeout=15,
+        )
+        results = resp.json().get("results", [])
+        # 统一成 Pexels 格式方便复用
+        photos = []
+        for r in results:
+            urls = r.get("urls", {})
+            user = r.get("user", {})
+            photos.append({
+                "_source": "Unsplash",
+                "url": r.get("links", {}).get("html", ""),
+                "alt": r.get("alt_description") or r.get("description") or "",
+                "width": r.get("width", 0),
+                "height": r.get("height", 0),
+                "photographer": user.get("name", ""),
+                "src": {
+                    "large": urls.get("regular", ""),
+                    "original": urls.get("full", ""),
+                },
+            })
+        return photos
+    except Exception as e:
+        print(f"  ⚠️ Unsplash API 异常: {e}")
+        return []
+
+
 def search_pexels(keyword, count, pexels_cfg):
     """搜索 Pexels 图片"""
     resp = requests.get(
@@ -500,6 +889,47 @@ def search_pexels(keyword, count, pexels_cfg):
         headers={"Authorization": pexels_cfg["api_key"]}
     )
     return resp.json().get("photos", [])
+
+
+def search_music(keyword, count, music_cfg):
+    """搜索音乐。默认使用 iTunes Search API。"""
+    if music_cfg.get("provider") != "itunes":
+        raise ValueError(f"暂不支持音乐来源: {music_cfg.get('provider')}")
+
+    resp = requests.get(
+        music_cfg["base_url"],
+        params={
+            "term": keyword,
+            "country": music_cfg["country"],
+            "media": music_cfg["media"],
+            "entity": music_cfg["entity"],
+            "limit": min(max(count * 5, count), 25),
+        },
+        timeout=30,
+    )
+    data = resp.json()
+    return data.get("results", [])
+
+
+def music_source_link(track):
+    return track.get("trackViewUrl") or track.get("collectionViewUrl") or track.get("previewUrl") or ""
+
+
+def music_artwork_url(track):
+    url = track.get("artworkUrl100", "")
+    return url.replace("100x100bb", "600x600bb") if url else ""
+
+
+def build_music_asset_name(track):
+    track_name = str(track.get("trackName") or "未命名歌曲").strip()
+    artist = str(track.get("artistName") or "").strip()
+    name = f"{track_name} - {artist}" if artist else track_name
+    return name[:48]
+
+
+def safe_filename(value):
+    text = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(value))
+    return "_".join(text.split("_"))[:80] or "music"
 
 
 def get_existing_links(token, feishu_creds):
@@ -533,9 +963,32 @@ def download_image(url, idx):
     return path, size
 
 
-def upload_to_feishu_drive(token, img_path, img_size, filename, feishu_creds):
-    """上传图片到飞书 Drive → 返回 file_token"""
-    with open(img_path, "rb") as f:
+def download_file(url, filename, headers=None, min_size=1, expected_content_prefix=None):
+    """下载文件到临时目录，返回路径和大小。"""
+    if not url:
+        return None, 0
+    resp = requests.get(url, stream=True, timeout=30, headers=headers or {})
+    if resp.status_code != 200:
+        if resp.status_code != 206:
+            return None, 0
+    content_type = resp.headers.get("content-type", "")
+    if expected_content_prefix and not content_type.startswith(expected_content_prefix):
+        return None, 0
+    path = os.path.join(tempfile.gettempdir(), filename)
+    with open(path, "wb") as f:
+        for chunk in resp.iter_content(8192):
+            f.write(chunk)
+    size = os.path.getsize(path)
+    if size < min_size:
+        os.remove(path)
+        return None, 0
+    return path, size
+
+
+def upload_to_feishu_drive(token, file_path, file_size, filename, feishu_creds, mime_type=None):
+    """上传文件到飞书 Drive → 返回 file_token。"""
+    mime_type = mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    with open(file_path, "rb") as f:
         resp = requests.post(
             feishu_creds.get("upload_endpoint", "https://open.feishu.cn/open-apis/drive/v1/medias/upload_all"),
             headers={"Authorization": f"Bearer {token}"},
@@ -543,9 +996,9 @@ def upload_to_feishu_drive(token, img_path, img_size, filename, feishu_creds):
                 "parent_type": feishu_creds.get("upload_parent_type", "bitable_file"),
                 "parent_node": feishu_creds["app_token"],
                 "file_name": filename,
-                "size": str(img_size)
+                "size": str(file_size)
             },
-            files={"file": (filename, f, "image/jpeg")}
+            files={"file": (filename, f, mime_type)}
         )
     result = resp.json()
     if result.get("code") != 0:
@@ -565,11 +1018,14 @@ def write_records_to_feishu(token, records, feishu_creds):
 
 
 def run(keyword=None, count=5, dry_run=False):
-    """主流程：搜图 → 下载 → 上传 → OS.md标准评判 → 写入飞书"""
+    """主流程：Tape 搜音乐，其它分类搜图 → 写入飞书"""
     # 加载配置
     keywords_cfg, judge_cfg, sources_cfg = load_configs()
     feishu_creds = get_feishu_credentials(sources_cfg)
     pexels_cfg = get_pexels_config(sources_cfg)
+    music_cfg = get_music_config(sources_cfg)
+    museum_cfg = get_museum_config(sources_cfg)
+    unsplash_cfg = get_unsplash_config(sources_cfg)
 
     token = get_feishu_token(feishu_creds)
     print(f"✅ Token 获取成功")
@@ -582,15 +1038,51 @@ def run(keyword=None, count=5, dry_run=False):
 
     base_judge_fields = get_judge_fields(keyword, keywords_cfg, judge_cfg, category=day_category)
     category = base_judge_fields["Category｜分类"]
+
+    # Block 和 OOTD 由用户手动上传真实图片，不支持自动抓取
+    if category in ("Block", "OOTD"):
+        print(f"⛔ 分类 {category} 使用用户上传的真实图片，不支持自动抓取。")
+        print(f"   请手动上传图片到飞书，或换一个 Postcard / Archive / Field Notes / Tape 关键词。")
+        return 0
+
     print(f"🔍 关键词: {keyword} → 分类: {category}")
-    print(f"   基础评分: {base_judge_fields['Score｜评分']} | 每张图片将独立修正")
+    item_label = "每首音乐" if category == "Tape" else "每张图片"
+    print(f"   基础评分: {base_judge_fields['Score｜评分']} | {item_label}将独立修正")
     print(f"   YONO: {base_judge_fields['YONO Reason｜为什么适合 YONO']}")
     print(f"   视觉: {base_judge_fields['Visual Tags｜视觉标签']}")
     print(f"   情绪: {base_judge_fields['Mood Tags｜情绪标签']}")
 
-    # 搜图
-    photos = search_pexels(keyword, count, pexels_cfg)
-    print(f"📸 Pexels 找到 {len(photos)} 张")
+    if category == "Tape":
+        return run_music_collection(
+            keyword,
+            count,
+            dry_run,
+            token,
+            feishu_creds,
+            keywords_cfg,
+            judge_cfg,
+            music_cfg,
+        )
+
+    # 图源策略：
+    #   Archive      → 博物馆优先，不足补 Pexels
+    #   Postcard / Field Notes → Unsplash 优先（有 Key），不足补 Pexels
+    #   其他         → Pexels
+    museum_items = []
+    if category == "Archive" and museum_cfg.get("enabled"):
+        museum_items = search_museum(keyword, count, museum_cfg)
+        print(f"🏛 博物馆找到 {len(museum_items)} 件藏品")
+
+    unsplash_photos = []
+    if category in ("Postcard", "Field Notes") and unsplash_cfg.get("api_key"):
+        unsplash_photos = search_unsplash(keyword, count + 3, unsplash_cfg)
+        print(f"🌿 Unsplash 找到 {len(unsplash_photos)} 张")
+
+    pexels_need = max(0, count - len(museum_items) - len(unsplash_photos))
+    photos = search_pexels(keyword, pexels_need + 3, pexels_cfg) if pexels_need > 0 else []
+    if photos:
+        src_label = "补充" if (museum_items or unsplash_photos) else ""
+        print(f"📸 Pexels 找到 {len(photos)} 张{'（' + src_label + '）' if src_label else ''}")
 
     # 查已有
     existing_links, existing_count = get_existing_links(token, feishu_creds)
@@ -599,16 +1091,83 @@ def run(keyword=None, count=5, dry_run=False):
     if dry_run:
         print("🧪 Dry run: 只预览评分，不下载、不上传、不写入飞书")
 
-    # 处理每张图
     now_ts = int(time.time())
     today_str = time.strftime("%Y-%m-%d")
     records = []
     success_count = 0
 
-    for i, p in enumerate(photos):
+    # ── 博物馆藏品 ──
+    for i, art in enumerate(museum_items):
+        if success_count >= count:
+            break
+        source_url = art["source_url"]
+        if source_url in existing_links:
+            print(f"  ⏭ Museum {i}: 已存在，跳过")
+            continue
+
+        # 用 title + artist + medium 作为 alt，交给评判引擎
+        alt_text = " ".join(filter(None, [art["title"], art["artist"], art["medium"], art["department"]]))
+        # 构造一个伪 photo dict 供 get_judge_fields 读 alt
+        pseudo_photo = {"alt": alt_text, "width": 2000, "height": 2000}
+        judge_fields = get_judge_fields(keyword, keywords_cfg, judge_cfg, category=day_category, photo=pseudo_photo)
+        asset_name = build_asset_name(
+            judge_fields["Category｜分类"],
+            alt=alt_text,
+            visual_tags=judge_fields.get("Visual Tags｜视觉标签", []),
+            reason=judge_fields.get("YONO Reason｜为什么适合 YONO", ""),
+        )
+
+        if dry_run:
+            print(
+                f"  🧪 Museum {i}: {asset_name} "
+                f"[{category} ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}]"
+            )
+            print(f"     来源: {art['source_name']} | {art['title'][:50]}")
+            print(f"     {judge_fields['YONO Reason｜为什么适合 YONO']}")
+            if judge_fields.get("Title｜标题"):
+                print(f"     标题：{judge_fields['Title｜标题']}")
+            success_count += 1
+            continue
+
+        img_path, img_size = download_image(art["image_url"], f"museum_{i}")
+        if img_path is None:
+            print(f"  ❌ Museum {i}: 图片下载失败")
+            continue
+
+        src_prefix = "met" if "metmuseum" in art["source_url"] else "aic"
+        filename = f"{src_prefix}_{today_str}_{i}.jpg"
+        file_token = upload_to_feishu_drive(token, img_path, img_size, filename, feishu_creds)
+        os.remove(img_path)
+
+        notes = " | ".join(filter(None, [art["title"], art["artist"], art["medium"]]))
+        record = {
+            "fields": {
+                "Asset Name｜素材名称": asset_name,
+                "Date｜收集日期": now_ts,
+                "Source｜来源平台": art["source_name"],
+                "Source Link｜来源链接": {"link": source_url, "text": source_url},
+                "Notes｜备注": notes,
+                **judge_fields,
+            }
+        }
+        if file_token:
+            record["fields"]["Image / File｜图片或文件"] = [{"file_token": file_token}]
+
+        records.append(record)
+        has_img = "🏛" if file_token else "❌无图"
+        print(
+            f"  {has_img} Museum {i}: {asset_name} ({img_size/1024:.0f}KB) "
+            f"[{category} ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}]"
+        )
+        success_count += 1
+
+    # ── Unsplash ──
+    for i, p in enumerate(unsplash_photos):
+        if success_count >= count:
+            break
         source_url = p.get("url", "")
         if source_url in existing_links:
-            print(f"  ⏭ Photo {i}: 已存在，跳过")
+            print(f"  ⏭ Unsplash {i}: 已存在，跳过")
             continue
 
         judge_fields = get_judge_fields(keyword, keywords_cfg, judge_cfg, category=day_category, photo=p)
@@ -621,7 +1180,67 @@ def run(keyword=None, count=5, dry_run=False):
 
         if dry_run:
             print(
-                f"  🧪 Photo {i}: {asset_name} "
+                f"  🧪 Unsplash {i}: {asset_name} "
+                f"[{category} ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}]"
+            )
+            print(f"     {judge_fields['YONO Reason｜为什么适合 YONO']}")
+            if judge_fields.get("Title｜标题"):
+                print(f"     标题：{judge_fields['Title｜标题']}")
+            success_count += 1
+            continue
+
+        img_url = p["src"]["large"]
+        img_path, img_size = download_image(img_url, f"unsplash_{i}")
+        if img_path is None:
+            print(f"  ❌ Unsplash {i}: 下载失败")
+            continue
+
+        filename = f"unsplash_{today_str}_{i}.jpg"
+        file_token = upload_to_feishu_drive(token, img_path, img_size, filename, feishu_creds)
+        os.remove(img_path)
+
+        photographer = p.get("photographer", "")
+        record = {
+            "fields": {
+                "Asset Name｜素材名称": asset_name,
+                "Date｜收集日期": now_ts,
+                "Source｜来源平台": "Unsplash",
+                "Source Link｜来源链接": {"link": source_url, "text": source_url},
+                "Notes｜备注": f"摄影师：{photographer}" if photographer else "",
+                **judge_fields,
+            }
+        }
+        if file_token:
+            record["fields"]["Image / File｜图片或文件"] = [{"file_token": file_token}]
+
+        records.append(record)
+        has_img = "🌿" if file_token else "❌无图"
+        print(
+            f"  {has_img} Unsplash {i}: {asset_name} ({img_size/1024:.0f}KB) "
+            f"[{category} ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}]"
+        )
+        success_count += 1
+
+    # ── Pexels 补充 ──
+    for i, p in enumerate(photos):
+        if success_count >= count:
+            break
+        source_url = p.get("url", "")
+        if source_url in existing_links:
+            print(f"  ⏭ Pexels {i}: 已存在，跳过")
+            continue
+
+        judge_fields = get_judge_fields(keyword, keywords_cfg, judge_cfg, category=day_category, photo=p)
+        asset_name = build_asset_name(
+            judge_fields["Category｜分类"],
+            alt=p.get("alt") or "",
+            visual_tags=judge_fields.get("Visual Tags｜视觉标签", []),
+            reason=judge_fields.get("YONO Reason｜为什么适合 YONO", ""),
+        )
+
+        if dry_run:
+            print(
+                f"  🧪 Pexels {i}: {asset_name} "
                 f"[{category} ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}]"
             )
             print(f"     {judge_fields['YONO Reason｜为什么适合 YONO']}")
@@ -632,25 +1251,22 @@ def run(keyword=None, count=5, dry_run=False):
             success_count += 1
             continue
 
-        # 下载图片 (按配置的尺寸)
         img_url = p["src"][pexels_cfg["image_size"]]
         img_path, img_size = download_image(img_url, i)
         if img_path is None:
-            print(f"  ❌ Photo {i}: 下载失败")
+            print(f"  ❌ Pexels {i}: 下载失败")
             continue
 
-        # 上传到飞书 Drive
         filename = f"pexels_{today_str}_{i}.jpg"
         file_token = upload_to_feishu_drive(token, img_path, img_size, filename, feishu_creds)
-        os.remove(img_path)  # 清理临时文件
-        # 构造记录（合并 OS.md 评判字段 + 图片）
+        os.remove(img_path)
         record = {
             "fields": {
                 "Asset Name｜素材名称": asset_name,
                 "Date｜收集日期": now_ts,
                 "Source｜来源平台": "Pexels",
                 "Source Link｜来源链接": {"link": source_url, "text": source_url},
-                **judge_fields,  # ← OS.md 标准自动评判字段
+                **judge_fields,
             }
         }
         if file_token:
@@ -659,7 +1275,7 @@ def run(keyword=None, count=5, dry_run=False):
         records.append(record)
         has_img = "🖼" if file_token else "❌无图"
         print(
-            f"  {has_img} Photo {i}: {asset_name} ({img_size/1024:.0f}KB) "
+            f"  {has_img} Pexels {i}: {asset_name} ({img_size/1024:.0f}KB) "
             f"[{category} ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}]"
         )
         success_count += 1
@@ -684,6 +1300,141 @@ def run(keyword=None, count=5, dry_run=False):
     else:
         print("\n📋 无新记录（全部重复或搜索为空）")
         return 0
+
+
+def run_music_collection(keyword, count, dry_run, token, feishu_creds, keywords_cfg, judge_cfg, music_cfg):
+    """Tape 流程：搜音乐 → 上传封面 → 写入飞书。"""
+    tracks = search_music(keyword, count, music_cfg)
+    print(f"🎧 {music_cfg['provider']} 找到 {len(tracks)} 首")
+
+    existing_links, existing_count = get_existing_links(token, feishu_creds)
+    print(f"📋 飞书已有 {existing_count} 条, {len(existing_links)} 个唯一链接")
+
+    if dry_run:
+        print("🧪 Dry run: 只预览音乐评分，不下载封面、不写入飞书")
+
+    now_ts = int(time.time())
+    today_str = time.strftime("%Y-%m-%d")
+    records = []
+    success_count = 0
+
+    for i, track in enumerate(tracks):
+        if success_count >= count:
+            break
+        source_url = music_source_link(track)
+        if source_url in existing_links:
+            print(f"  ⏭ Track {i}: 已存在，跳过")
+            continue
+
+        judge_fields = get_music_judge_fields(
+            keyword,
+            keywords_cfg,
+            judge_cfg,
+            track,
+            category="Tape",
+        )
+        judge_fields["Status｜状态"] = judge_cfg.get("default_status", "Raw｜未判断")
+        judge_fields["Title｜标题"] = ""
+        judge_fields["Content Angle｜内容角度"] = ""
+        asset_name = build_music_asset_name(track)
+
+        if dry_run:
+            print(
+                f"  🧪 Track {i}: {asset_name} "
+                f"[Tape ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}]"
+            )
+            print(f"     {judge_fields['YONO Reason｜为什么适合 YONO']}")
+            if track.get("previewUrl"):
+                print(f"     将下载试听音频：{track['previewUrl']}")
+            success_count += 1
+            continue
+
+        file_tokens = []
+        audio_token = None
+        preview_url = track.get("previewUrl")
+        if preview_url:
+            audio_filename = f"music_{today_str}_{i}_{safe_filename(asset_name)}.m4a"
+            audio_path, audio_size = download_file(
+                preview_url,
+                audio_filename,
+                headers={"User-Agent": "iTunes/12.0", "Range": "bytes=0-"},
+                min_size=1024,
+                expected_content_prefix="audio/",
+            )
+            if audio_path:
+                audio_token = upload_to_feishu_drive(
+                    token,
+                    audio_path,
+                    audio_size,
+                    audio_filename,
+                    feishu_creds,
+                    mime_type="audio/mp4",
+                )
+                os.remove(audio_path)
+                if audio_token:
+                    file_tokens.append({"file_token": audio_token})
+        if not audio_token:
+            print(f"  ⏭ Track {i}: 音频无法下载或上传，跳过")
+            continue
+
+        artwork_url = music_artwork_url(track)
+        if artwork_url:
+            img_path, img_size = download_image(artwork_url, f"music_{i}")
+            if img_path:
+                filename = f"music_{today_str}_{i}.jpg"
+                file_token = upload_to_feishu_drive(token, img_path, img_size, filename, feishu_creds)
+                os.remove(img_path)
+                if file_token:
+                    file_tokens.append({"file_token": file_token})
+
+        notes = []
+        if track.get("previewUrl"):
+            notes.append(f"试听链接：{track['previewUrl']}")
+            if audio_token:
+                notes.append("试听音频：已下载到附件")
+        if track.get("collectionName"):
+            notes.append(f"专辑：{track['collectionName']}")
+        if track.get("primaryGenreName"):
+            notes.append(f"类型：{track['primaryGenreName']}")
+
+        record = {
+            "fields": {
+                "Asset Name｜素材名称": asset_name,
+                "Date｜收集日期": now_ts,
+                "Source｜来源平台": "Apple Music / iTunes",
+                "Source Link｜来源链接": {"link": source_url, "text": source_url},
+                "Notes｜备注": "；".join(notes),
+                **judge_fields,
+            }
+        }
+        if file_tokens:
+            record["fields"]["Image / File｜图片或文件"] = file_tokens
+
+        records.append(record)
+        has_audio = "🎵" if audio_token else "❌无音频"
+        print(
+            f"  {has_audio} Track {i}: {asset_name} "
+            f"[Tape ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}]"
+        )
+        success_count += 1
+
+    if dry_run:
+        print(f"\n🧪 Dry run 完成，预览 {success_count} 条音乐候选记录，未写入飞书")
+        return success_count
+
+    if records:
+        result = write_records_to_feishu(token, records, feishu_creds)
+        if result.get("code") == 0:
+            created = result.get("data", {}).get("records", [])
+            file_count = sum(1 for r in created if r.get("fields", {}).get("Image / File｜图片或文件"))
+            print(f"\n🎉 成功写入 {len(created)} 条音乐记录!")
+            print(f"   其中 {file_count} 条含音频/封面附件")
+            return len(created)
+        print(f"\n❌ 写入失败: {result.get('msg')}")
+        return 0
+
+    print("\n📋 无新音乐记录（全部重复或搜索为空）")
+    return 0
 
 
 def backfill_records():
@@ -794,6 +1545,152 @@ def backfill_records():
     else:
         print("所有记录已完整，无需回填")
 
+    # ── 补全发布内容：Status=Save 但缺 发布内容 的记录 ──
+    post_updates = []
+    for item in items:
+        fields = item.get("fields", {})
+        if fields.get("Status｜状态") != "Save｜保存":
+            continue
+        if fields.get("Post Content｜发布内容"):
+            continue
+
+        category = fields.get("Category｜分类", "")
+        name = fields.get("Asset Name｜素材名称", "")
+        title = fields.get("Title｜标题", "") or ""
+        reason = fields.get("YONO Reason｜为什么适合 YONO", "") or ""
+        source = fields.get("Source｜来源平台", "") or ""
+        notes = fields.get("Notes｜备注", "") or ""
+        alt = notes or name
+
+        # 用已有的视觉/情绪标签反推信号词
+        vtags = fields.get("Visual Tags｜视觉标签") or []
+        vtags = vtags if isinstance(vtags, list) else [vtags]
+        positive_hits = [t.replace("warm light", "warm").replace("soft color", "soft") for t in vtags]
+        curiosity_point = build_curiosity_point(category, alt, [], [])
+
+        if source in ("Apple Music / iTunes",) or category == "Tape":
+            # 音乐类：从 Notes 里恢复 track 信息
+            track = {}
+            for line in str(notes).split("；"):
+                if line.startswith("专辑："):
+                    track["collectionName"] = line[3:]
+                elif line.startswith("类型："):
+                    track["primaryGenreName"] = line[3:]
+            # 从 Asset Name 拆出 track - artist
+            parts = name.split(" - ", 1)
+            track["trackName"] = parts[0].strip()
+            track["artistName"] = parts[1].strip() if len(parts) > 1 else ""
+            post_content = build_xiaohongshu_music_post(track, title, curiosity_point, positive_hits, reason)
+        else:
+            post_content = build_xiaohongshu_post(
+                category, title, alt, curiosity_point, positive_hits, [], reason
+            )
+
+        if post_content:
+            post_updates.append({
+                "record_id": item["record_id"],
+                "fields": {"Post Content｜发布内容": post_content}
+            })
+            print(f"  ✍️  {name[:40]} → 发布内容已生成")
+
+    if post_updates:
+        total_post = 0
+        for batch_start in range(0, len(post_updates), 5):
+            batch = post_updates[batch_start:batch_start+5]
+            r = requests.post(
+                f"https://open.feishu.cn/open-apis/bitable/v1/apps/{feishu_creds['app_token']}/tables/{feishu_creds['table_id']}/records/batch_update",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"records": batch}
+            ).json()
+            if r.get("code") == 0:
+                total_post += len(batch)
+            else:
+                print(f"  ❌ 发布内容写入失败: {r.get('msg')}")
+        if total_post:
+            print(f"\n✍️  补全发布内容 {total_post} 条！")
+    else:
+        print("无需补全发布内容（无 Save 素材或已全部补全）")
+
+
+def fix_pexels_tape_records(dry_run=False):
+    """修正 Pexels 图片被错误标为 Tape 的记录，按图片标准重新分类。"""
+    keywords_cfg, judge_cfg, sources_cfg = load_configs()
+    feishu_creds = get_feishu_credentials(sources_cfg)
+    modules = judge_cfg.get("modules", {})
+
+    token = get_feishu_token(feishu_creds)
+    print(f"✅ Token 获取成功")
+
+    resp = requests.get(
+        f"https://open.feishu.cn/open-apis/bitable/v1/apps/{feishu_creds['app_token']}/tables/{feishu_creds['table_id']}/records",
+        params={"page_size": 500},
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    items = resp.json().get("data", {}).get("items", [])
+    print(f"📋 总共 {len(items)} 条记录，扫描 Pexels+Tape 误标...")
+
+    updates = []
+    for item in items:
+        fields = item.get("fields", {})
+        category = fields.get("Category｜分类", "")
+        source = fields.get("Source｜来源平台", "")
+        link_field = fields.get("Source Link｜来源链接", "")
+        link = link_field.get("link", "") if isinstance(link_field, dict) else str(link_field)
+
+        is_pexels = "pexels" in link.lower() or "pexels" in str(source).lower()
+        if not (is_pexels and category == "Tape"):
+            continue
+
+        name = fields.get("Asset Name｜素材名称", "")
+        new_category = classify_category(name + " " + link, keywords_cfg)
+        # 如果还是推断成 Tape（音乐词），改为 Block 兜底
+        if new_category == "Tape":
+            new_category = "Block"
+
+        judge = modules.get(new_category, modules.get("Block", {}))
+        curiosity_point = build_curiosity_point(new_category, name, [], [])
+        new_reason = (
+            f"筛选理由：此条素材为 Pexels 图片，已从 Tape 重新归类为 {new_category}。"
+            f" {judge.get('yono_reason', '')} "
+            f"好奇心点：{curiosity_point}"
+        )
+
+        update_fields = {
+            "Category｜分类": new_category,
+            "YONO Reason｜为什么适合 YONO": new_reason,
+            "Visual Tags｜视觉标签": judge.get("visual_tags", []),
+            "Mood Tags｜情绪标签": judge.get("mood_tags", []),
+        }
+        if dry_run:
+            print(f"  🧪 {item['record_id']} | {name[:40]} | Tape → {new_category}")
+        else:
+            updates.append({"record_id": item["record_id"], "fields": update_fields})
+            print(f"  🔧 {item['record_id']} | {name[:40]} | Tape → {new_category}")
+
+    if dry_run:
+        print(f"\n🧪 Dry run 完成，共 {len([i for i in items if 'pexels' in str(i.get('fields',{}).get('Source Link｜来源链接','')).lower() and i.get('fields',{}).get('Category｜分类')=='Tape'])} 条需修正")
+        return
+
+    if not updates:
+        print("未发现 Pexels+Tape 误标记录，无需修正")
+        return
+
+    total_updated = 0
+    for batch_start in range(0, len(updates), 5):
+        batch = updates[batch_start:batch_start+5]
+        result = requests.post(
+            f"https://open.feishu.cn/open-apis/bitable/v1/apps/{feishu_creds['app_token']}/tables/{feishu_creds['table_id']}/records/batch_update",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"records": batch}
+        )
+        r = result.json()
+        if r.get("code") == 0:
+            total_updated += len(batch)
+            print(f"  Batch {batch_start//5+1}: ✅ {len(batch)} 条")
+        else:
+            print(f"  Batch {batch_start//5+1}: ❌ {r.get('msg')}")
+    print(f"\n✅ 修正 {total_updated} 条误标记录!")
+
 
 def list_records():
     """查看飞书表格现有记录"""
@@ -806,12 +1703,390 @@ def list_records():
     return count
 
 
+def fill_links(dry_run=False):
+    """扫描飞书表格中只有 Source Link、缺少图片或评判字段的记录，自动补全。
+    用法：在飞书新建一行，只填 Source Link，运行此命令即可补全所有字段。
+    支持来源：Pinterest / Unsplash / Pexels / 任意图片直链 / 博物馆页面
+    """
+    keywords_cfg, judge_cfg, sources_cfg = load_configs()
+    feishu_creds = get_feishu_credentials(sources_cfg)
+    pexels_cfg = get_pexels_config(sources_cfg)
+
+    token = get_feishu_token(feishu_creds)
+    print(f"✅ Token 获取成功")
+
+    resp = requests.get(
+        f"https://open.feishu.cn/open-apis/bitable/v1/apps/{feishu_creds['app_token']}/tables/{feishu_creds['table_id']}/records",
+        params={"page_size": 500},
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    items = resp.json().get("data", {}).get("items", [])
+    print(f"📋 总共 {len(items)} 条记录，扫描待补全...")
+
+    today_str = time.strftime("%Y-%m-%d")
+    now_ts = int(time.time())
+    pending = []
+
+    for item in items:
+        fields = item.get("fields", {})
+        link_field = fields.get("Source Link｜来源链接", "")
+        link = link_field.get("link", "") if isinstance(link_field, dict) else str(link_field or "")
+        if not link:
+            continue
+        # 判断是否需要补全：缺图片 或 缺评判字段
+        has_image = bool(fields.get("Image / File｜图片或文件"))
+        has_score = bool(fields.get("Score｜评分"))
+        if has_image and has_score:
+            continue
+        pending.append((item["record_id"], fields, link))
+
+    print(f"🔍 发现 {len(pending)} 条待补全记录")
+    if not pending:
+        return
+
+    updates = []
+    for record_id, fields, link in pending:
+        print(f"\n  处理: {link[:70]}")
+
+        # 从链接或已有字段推断分类
+        existing_cat = fields.get("Category｜分类", "")
+        if existing_cat and existing_cat not in ("Block", "OOTD"):
+            category = existing_cat
+        else:
+            category = classify_category(link, keywords_cfg)
+            if category in ("Block", "OOTD"):
+                category = "Archive"
+
+        # 尝试提取可直接下载的图片 URL
+        img_url = _extract_image_url(link)
+        if not img_url:
+            print(f"    ⚠️ 无法从链接提取图片，跳过（可手动上传图片）")
+            continue
+
+        # 下载图片
+        img_path, img_size = download_image(img_url, f"fill_{record_id[:8]}")
+        if not img_path:
+            print(f"    ❌ 图片下载失败")
+            continue
+
+        # 用图片 alt / 链接文字作为描述交给评判引擎
+        alt = fields.get("Notes｜备注", "") or link
+        pseudo_photo = {"alt": alt, "width": 1200, "height": 1200}
+        judge_fields = get_judge_fields(link, keywords_cfg, judge_cfg, category=category, photo=pseudo_photo)
+
+        asset_name = fields.get("Asset Name｜素材名称", "") or build_asset_name(
+            category,
+            alt=alt,
+            visual_tags=judge_fields.get("Visual Tags｜视觉标签", []),
+            reason=judge_fields.get("YONO Reason｜为什么适合 YONO", ""),
+        )
+
+        source_name = _guess_source_name(link)
+
+        if dry_run:
+            os.remove(img_path)
+            print(f"    🧪 {asset_name} [{category} ★{judge_fields['Score｜评分']}] 来源: {source_name}")
+            continue
+
+        # 上传图片
+        filename = f"fill_{today_str}_{record_id[:8]}.jpg"
+        file_token = upload_to_feishu_drive(token, img_path, img_size, filename, feishu_creds)
+        os.remove(img_path)
+
+        update_fields = {
+            "Asset Name｜素材名称": asset_name,
+            "Date｜收集日期": fields.get("Date｜收集日期") or now_ts,
+            "Source｜来源平台": fields.get("Source｜来源平台") or source_name,
+            **judge_fields,
+        }
+        if file_token:
+            update_fields["Image / File｜图片或文件"] = [{"file_token": file_token}]
+
+        updates.append({"record_id": record_id, "fields": update_fields})
+        print(f"    ✅ {asset_name} [{category} ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}] {img_size//1024}KB")
+
+    if dry_run:
+        print(f"\n🧪 Dry run 完成，共 {len(pending)} 条待处理")
+        return
+
+    if not updates:
+        print("\n无记录可更新")
+        return
+
+    # 批量写回飞书
+    total = 0
+    for i in range(0, len(updates), 5):
+        batch = updates[i:i+5]
+        r = requests.post(
+            f"https://open.feishu.cn/open-apis/bitable/v1/apps/{feishu_creds['app_token']}/tables/{feishu_creds['table_id']}/records/batch_update",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"records": batch}
+        ).json()
+        if r.get("code") == 0:
+            total += len(batch)
+        else:
+            print(f"  ❌ 批次失败: {r.get('msg')}")
+    print(f"\n🎉 补全 {total} 条记录！")
+
+
+def _extract_image_url(link):
+    """从页面链接提取可直接下载的图片 URL。"""
+    # 已经是图片直链
+    if any(link.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp")):
+        return link
+    # Pinterest 图片直链格式
+    if "pinimg.com" in link:
+        return link
+    # Unsplash 图片页面 → 拼 download URL
+    if "unsplash.com/photos/" in link:
+        photo_id = link.rstrip("/").split("/")[-1].split("?")[0]
+        return f"https://source.unsplash.com/{photo_id}/1200x1200"
+    # Pexels 图片页面 → 尝试抓 og:image
+    if "pexels.com" in link or "unsplash.com" in link or "pinterest" in link:
+        return _fetch_og_image(link)
+    # 通用：尝试抓 og:image
+    return _fetch_og_image(link)
+
+
+def _fetch_og_image(url):
+    """从页面 HTML 提取 og:image。"""
+    try:
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        html = resp.text
+        # og:image
+        for pattern in [
+            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\'](https?://[^"\']+)["\']',
+            r'<meta[^>]+content=["\'](https?://[^"\']+)["\'][^>]+property=["\']og:image["\']',
+        ]:
+            import re
+            m = re.search(pattern, html)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def _guess_source_name(link):
+    """从 URL 猜测来源平台名称。"""
+    if "pinterest" in link or "pinimg" in link:
+        return "Pinterest"
+    if "unsplash" in link:
+        return "Unsplash"
+    if "pexels" in link:
+        return "Pexels"
+    if "metmuseum" in link:
+        return "The Metropolitan Museum of Art"
+    if "artic.edu" in link:
+        return "Art Institute of Chicago"
+    if "rijksmuseum" in link:
+        return "Rijksmuseum"
+    try:
+        from urllib.parse import urlparse
+        return urlparse(link).netloc.replace("www.", "")
+    except Exception:
+        return "Web"
+
+
+def _extract_field_notes_keyword(title, post_content):
+    """从 Field Notes 的标题和发布内容里提取适合搜图的英文关键词。"""
+    import re
+    # 取标题前20字 + post_content前50字，去掉中文标点
+    text = f"{title} {post_content}"[:120]
+    # 过滤掉中文字符，保留英文单词和数字
+    en_words = re.findall(r"[a-zA-Z]{3,}", text)
+    stopwords = {"the", "and", "for", "that", "with", "this", "are", "you", "can",
+                 "have", "will", "from", "not", "but", "its", "into", "was", "been"}
+    en_words = [w.lower() for w in en_words if w.lower() not in stopwords]
+    # 如果英文词太少，加上通用 Field Notes 搜图词
+    if len(en_words) < 2:
+        en_words = ["notebook", "desk", "inspiration", "observation"]
+    return " ".join(en_words[:5])
+
+
+def watch_and_fill(interval=180):
+    """每隔 interval 秒检查飞书表格：
+    - 普通分类：Status=Save → 补全 Title / Post Content
+    - Field Notes：Status=Save + 有 Title + 有 Post Content + 无图片 → 自动根据内容搜图写入
+    Ctrl+C 退出。
+    """
+    keywords_cfg, judge_cfg, sources_cfg = load_configs()
+    feishu_creds = get_feishu_credentials(sources_cfg)
+    pexels_cfg = get_pexels_config(sources_cfg)
+    unsplash_cfg = get_unsplash_config(sources_cfg)
+
+    print(f"👁  Watch 模式启动，每 {interval//60} 分钟检查一次。Ctrl+C 退出。")
+
+    while True:
+        try:
+            token = get_feishu_token(feishu_creds)
+            resp = requests.get(
+                f"https://open.feishu.cn/open-apis/bitable/v1/apps/{feishu_creds['app_token']}/tables/{feishu_creds['table_id']}/records",
+                params={"page_size": 500},
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            items = resp.json().get("data", {}).get("items", [])
+            now_str = time.strftime("%H:%M:%S")
+            today_str = time.strftime("%Y-%m-%d")
+            now_ts = int(time.time())
+
+            # ── Field Notes 逆向流程：用户先写内容，系统去找图 ──
+            fn_pending = [
+                item for item in items
+                if item.get("fields", {}).get("Category｜分类") == "Field Notes"
+                and item.get("fields", {}).get("Status｜状态") == "Save｜保存"
+                and item.get("fields", {}).get("Title｜标题")
+                and item.get("fields", {}).get("Post Content｜发布内容")
+                and not item.get("fields", {}).get("Image / File｜图片或文件")
+            ]
+            if fn_pending:
+                print(f"[{now_str}] 📓 Field Notes: {len(fn_pending)} 条需要自动配图")
+            for item in fn_pending:
+                fields = item.get("fields", {})
+                title = str(fields.get("Title｜标题") or "")
+                post_content = str(fields.get("Post Content｜发布内容") or "")
+                name = fields.get("Asset Name｜素材名称", "") or title[:20]
+                keyword = _extract_field_notes_keyword(title, post_content)
+                print(f"  🔍 搜图关键词: {keyword}  ← {name[:30]}")
+
+                # 优先 Unsplash，没有 Key 用 Pexels
+                photos = []
+                if unsplash_cfg.get("api_key"):
+                    photos = search_unsplash(keyword, 5, unsplash_cfg)
+                if not photos:
+                    photos = search_pexels(keyword, 5, pexels_cfg)
+
+                img_path = img_size = file_token = None
+                for p in photos:
+                    img_url = p["src"].get("large") or p["src"].get("original", "")
+                    img_path, img_size = download_image(img_url, f"fn_{item['record_id'][:8]}")
+                    if img_path:
+                        break
+
+                if not img_path:
+                    print(f"  ⚠️ 搜图失败，跳过")
+                    continue
+
+                source_name = "Unsplash" if unsplash_cfg.get("api_key") and photos else "Pexels"
+                source_url = photos[0].get("url", "") if photos else ""
+                filename = f"fn_{today_str}_{item['record_id'][:8]}.jpg"
+                file_token = upload_to_feishu_drive(token, img_path, img_size, filename, feishu_creds)
+                os.remove(img_path)
+
+                # 补全评判字段（用 title+post_content 作为 alt）
+                alt = f"{title} {post_content[:80]}"
+                pseudo_photo = {"alt": alt, "width": 1200, "height": 1200}
+                judge_fields = get_judge_fields(keyword, keywords_cfg, judge_cfg, category="Field Notes", photo=pseudo_photo)
+
+                update_fields = {
+                    "Source｜来源平台": source_name,
+                    "Source Link｜来源链接": {"link": source_url, "text": source_url},
+                    "Date｜收集日期": fields.get("Date｜收集日期") or now_ts,
+                    "Score｜评分": judge_fields["Score｜评分"],
+                    "YONO Reason｜为什么适合 YONO": judge_fields["YONO Reason｜为什么适合 YONO"],
+                    "Content Angle｜内容角度": judge_fields["Content Angle｜内容角度"],
+                    "Visual Tags｜视觉标签": judge_fields["Visual Tags｜视觉标签"],
+                    "Mood Tags｜情绪标签": judge_fields["Mood Tags｜情绪标签"],
+                }
+                if file_token:
+                    update_fields["Image / File｜图片或文件"] = [{"file_token": file_token}]
+
+                r = requests.post(
+                    f"https://open.feishu.cn/open-apis/bitable/v1/apps/{feishu_creds['app_token']}/tables/{feishu_creds['table_id']}/records/batch_update",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json={"records": [{"record_id": item["record_id"], "fields": update_fields}]}
+                ).json()
+                if r.get("code") == 0:
+                    print(f"  🖼  {name[:40]} → 配图完成 ({img_size//1024}KB) [{source_name}]")
+                else:
+                    print(f"  ❌ 写入失败: {r.get('msg')}")
+
+            # ── 普通分类：Status=Save → 补全 Title / Post Content ──
+            pending = [
+                item for item in items
+                if item.get("fields", {}).get("Status｜状态") == "Save｜保存"
+                and item.get("fields", {}).get("Category｜分类") != "Field Notes"
+                and (
+                    not item.get("fields", {}).get("Title｜标题")
+                    or not item.get("fields", {}).get("Post Content｜发布内容")
+                )
+            ]
+
+            if not fn_pending and not pending:
+                print(f"[{now_str}] ✅ 无待补全记录")
+            elif pending:
+                print(f"[{now_str}] 🔍 发现 {len(pending)} 条 Save 记录待补全 Title/Post Content")
+                updates = []
+                for item in pending:
+                    fields = item.get("fields", {})
+                    category = fields.get("Category｜分类", "")
+                    name = fields.get("Asset Name｜素材名称", "")
+                    reason = fields.get("YONO Reason｜为什么适合 YONO", "") or ""
+                    notes = fields.get("Notes｜备注", "") or ""
+                    alt = notes or name
+                    source = fields.get("Source｜来源平台", "") or ""
+                    vtags = fields.get("Visual Tags｜视觉标签") or []
+                    vtags = vtags if isinstance(vtags, list) else [vtags]
+                    positive_hits = [t for t in vtags]
+                    curiosity_point = build_curiosity_point(category, alt, [], [])
+
+                    is_music = source in ("Apple Music / iTunes",) or category == "Tape"
+                    if is_music:
+                        track = {}
+                        for line in str(notes).split("；"):
+                            if line.startswith("专辑："):
+                                track["collectionName"] = line[3:]
+                            elif line.startswith("类型："):
+                                track["primaryGenreName"] = line[3:]
+                        parts = name.split(" - ", 1)
+                        track["trackName"] = parts[0].strip()
+                        track["artistName"] = parts[1].strip() if len(parts) > 1 else ""
+                        title = fields.get("Title｜标题") or build_music_title(track, positive_hits)
+                        post_content = build_xiaohongshu_music_post(track, title, curiosity_point, positive_hits, reason)
+                    else:
+                        title = fields.get("Title｜标题") or build_xiaohongshu_title(category, alt, positive_hits, [])
+                        post_content = build_xiaohongshu_post(category, title, alt, curiosity_point, positive_hits, [], reason)
+
+                    update_fields = {}
+                    if not fields.get("Title｜标题"):
+                        update_fields["Title｜标题"] = title
+                    if not fields.get("Post Content｜发布内容") and post_content:
+                        update_fields["Post Content｜发布内容"] = post_content
+
+                    if update_fields:
+                        updates.append({"record_id": item["record_id"], "fields": update_fields})
+                        print(f"  ✍️  {name[:40]} → {list(update_fields.keys())}")
+
+                for i in range(0, len(updates), 5):
+                    batch = updates[i:i+5]
+                    r = requests.post(
+                        f"https://open.feishu.cn/open-apis/bitable/v1/apps/{feishu_creds['app_token']}/tables/{feishu_creds['table_id']}/records/batch_update",
+                        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                        json={"records": batch}
+                    ).json()
+                    if r.get("code") != 0:
+                        print(f"  ❌ 写入失败: {r.get('msg')}")
+                if updates:
+                    print(f"  ✅ 补全 {len(updates)} 条")
+
+        except KeyboardInterrupt:
+            print("\n👁  Watch 模式已退出。")
+            break
+        except Exception as e:
+            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ 检查出错: {e}")
+
+        time.sleep(interval)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="YONO Collector: Pexels → 飞书（OS.md 标准）")
     parser.add_argument("--keyword", "-k", help="搜索关键词（默认按星期轮换）")
     parser.add_argument("--count", "-n", type=int, default=5, help="每次搜图数量（默认5）")
     parser.add_argument("--list", "-l", action="store_true", help="只查看飞书记录数")
     parser.add_argument("--backfill", "-b", action="store_true", help="回填已有记录的空评判字段")
+    parser.add_argument("--fix-tape", action="store_true", help="修正 Pexels 图片被错误标为 Tape 的记录")
+    parser.add_argument("--fill-links", action="store_true", help="补全飞书中只有 Source Link 的空白记录")
+    parser.add_argument("--watch", "-w", action="store_true", help="监听模式：每3分钟自动补全 Save 记录的 Title/Post Content")
     parser.add_argument("--dry-run", action="store_true", help="只预览评分，不下载、不上传、不写入飞书")
     args = parser.parse_args()
 
@@ -819,5 +2094,11 @@ if __name__ == "__main__":
         list_records()
     elif args.backfill:
         backfill_records()
+    elif args.fix_tape:
+        fix_pexels_tape_records(dry_run=args.dry_run)
+    elif args.fill_links:
+        fill_links(dry_run=args.dry_run)
+    elif args.watch:
+        watch_and_fill(interval=180)
     else:
         run(keyword=args.keyword, count=args.count, dry_run=args.dry_run)

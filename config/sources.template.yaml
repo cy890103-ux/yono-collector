@@ -9,6 +9,39 @@ pexels:
   orientation: "squarish"
   image_size: "large"
 
+# Unsplash 图源（Postcard / Field Notes 使用，风格接近 Pinterest 精选）
+unsplash:
+  api_key: ""    # ← 填入 Access Key（unsplash.com/oauth/applications）
+  base_url: "https://api.unsplash.com/search/photos"
+  orientation: "squarish"   # squarish / landscape / portrait
+
+# 博物馆图源（Archive / Postcard 优先使用，无需 API Key）
+museums:
+  enabled: true
+  # 大都会艺术博物馆（纽约）— 完全开放，无需 Key
+  met:
+    enabled: true
+    search_url: "https://collectionapi.metmuseum.org/public/collection/v1/search"
+    object_url: "https://collectionapi.metmuseum.org/public/collection/v1/objects"
+  # 芝加哥艺术学院 — 完全开放，无需 Key
+  aic:
+    enabled: true
+    search_url: "https://api.artic.edu/api/v1/artworks/search"
+    image_base_url: "https://www.artic.edu/iiif/2"
+  # Rijksmuseum（荷兰国家博物馆）— 需免费申请 Key
+  # 申请地址：https://www.rijksmuseum.nl/api
+  rijksmuseum:
+    enabled: false
+    api_key: ""    # ← 申请后填入
+
+# 音乐来源（Tape 使用）。iTunes Search API 不需要密钥。
+music:
+  provider: "itunes"
+  base_url: "https://itunes.apple.com/search"
+  country: "US"
+  media: "music"
+  entity: "song"
+
 # 飞书连接
 feishu:
   app_id: "你的_飞书_App_ID"          # ← 填入真实 App ID
