@@ -4,6 +4,10 @@
 #
 # Score: 1=Not YONO, 2=Weak, 3=Usable, 4=Strong, 5=Highly YONO
 # Visual Tags / Mood Tags: 必须是飞书表格里的选项，不能随便写
+#
+# v1.1: 图片不再只按模块固定给分。
+# 脚本会先用模块分作为基础分，再根据每张 Pexels 图片的 alt、尺寸、
+# YONO 正向信号、分类相关信号、反向信号独立修正评分。
 
 modules:
   Postcard:
@@ -97,6 +101,125 @@ modules:
 
 # 新记录的默认状态
 default_status: "Raw｜未判断"
+
+
+# 图片质量判断模型
+# 目标：减少“只因为关键词匹配就给高分”的误判，让 4/5 分只给真正值得收藏的图。
+quality_model:
+  enabled: true
+
+  # 分数自动映射状态。1/2 直接放弃，3 待定，4/5 保存。
+  status_by_score:
+    1: "Reject｜放弃"
+    2: "Reject｜放弃"
+    3: "Maybe｜待定"
+    4: "Save｜保存"
+    5: "Save｜保存"
+
+  # 尺寸门槛。Pexels 元数据里短边过低的图不应高分。
+  high_resolution_min_short_edge: 1400
+  low_resolution_min_short_edge: 900
+
+  # YONO 通用正向信号：安静、有质感、可收藏、日常但有余味。
+  yono_positive_signals:
+    - warm
+    - soft
+    - quiet
+    - calm
+    - cozy
+    - minimal
+    - minimalist
+    - texture
+    - paper
+    - wooden
+    - craft
+    - handmade
+    - vintage
+    - still life
+    - home
+    - desk
+    - detail
+    - natural light
+    - muted
+    - neutral
+    - simple
+    - tactile
+
+  # 反向信号：过度商业、模板感、廉价素材感、信息噪音太强。
+  anti_signals:
+    - corporate
+    - business meeting
+    - office meeting
+    - stock photo
+    - advertisement
+    - sales
+    - shopping
+    - luxury
+    - glamorous
+    - party
+    - neon
+    - crowded
+    - busy background
+    - generic
+    - isolated on white
+    - mockup
+
+  # 分类相关信号。对应分类至少命中一些视觉/语义线索，才能拿到 4/5。
+  category_signals:
+    Postcard:
+      - warm
+      - home
+      - quiet
+      - soft
+      - cozy
+      - sunlight
+      - gentle
+      - calm
+    Archive:
+      - vintage
+      - archive
+      - old
+      - heritage
+      - classic
+      - photography
+      - architecture
+      - art
+    Field Notes:
+      - note
+      - notebook
+      - desk
+      - paper
+      - pen
+      - observation
+      - journal
+      - workspace
+    OOTD:
+      - outfit
+      - sneaker
+      - shoes
+      - fashion
+      - street
+      - wear
+      - style
+      - lifestyle
+    Block:
+      - product
+      - object
+      - material
+      - texture
+      - craft
+      - wooden
+      - packaging
+      - detail
+    Tape:
+      - music
+      - record
+      - tape
+      - vinyl
+      - sound
+      - movie
+      - still life
+      - mood
 
 # 可用的飞书选项值（参考，改标签时不要超出这些范围）
 available_visual_tags:

@@ -63,6 +63,9 @@ fuzzy_match:
     - texture
     - material
     - craft
+    - handmade
+    - ceramic
+    - object
     - minimalist
     - product
     - pattern
