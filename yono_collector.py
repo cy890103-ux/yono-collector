@@ -1201,44 +1201,65 @@ def run(keyword=None, count=5, images_per_record=4, dry_run=False):
             music_cfg,
         )
 
-    # 需要的图片总量：每条记录 images_per_record 张，多搜 50% 备用
+    # 需要的图片总量：每条记录 images_per_record 张，多搜备用
     fetch_total = count * images_per_record * 2
 
     # 图源策略：
-    #   Archive      → 博物馆优先，不足补 Pexels
-    #   Postcard / Field Notes → Unsplash 优先（有 Key），不足补 Pexels
+    #   Archive      → 只用博物馆，绝不使用 Pexels
+    #   Postcard / Field Notes → Unsplash 优先，不足补 Pexels
     #   其他         → Pexels
     all_candidates = []  # [(src_type, item), ...]
 
-    if category == "Archive" and museum_cfg.get("enabled"):
+    if category == "Archive":
+        if not museum_cfg.get("enabled"):
+            print("⛔ Archive 只允许博物馆来源，但博物馆未启用，请检查 sources.yaml")
+            return 0
         museum_items = search_museum(keyword, fetch_total, museum_cfg)
         print(f"🏛 博物馆找到 {len(museum_items)} 件藏品")
         for item in museum_items:
             all_candidates.append(("museum", item))
+        if not all_candidates:
+            print("⛔ Archive 只允许博物馆来源，今日博物馆 API 全部不可用，跳过（不使用 Pexels 替代）")
+            return 0
+    else:
+        if category in ("Postcard", "Field Notes") and unsplash_cfg.get("api_key"):
+            unsplash_photos = search_unsplash(keyword, fetch_total, unsplash_cfg)
+            print(f"🌿 Unsplash 找到 {len(unsplash_photos)} 张")
+            for p in unsplash_photos:
+                all_candidates.append(("unsplash", p))
 
-    if category in ("Postcard", "Field Notes") and unsplash_cfg.get("api_key"):
-        unsplash_photos = search_unsplash(keyword, fetch_total, unsplash_cfg)
-        print(f"🌿 Unsplash 找到 {len(unsplash_photos)} 张")
-        for p in unsplash_photos:
-            all_candidates.append(("unsplash", p))
+        pexels_need = max(0, fetch_total - len(all_candidates))
+        if pexels_need > 0:
+            pexels_photos = search_pexels(keyword, pexels_need, pexels_cfg)
+            if pexels_photos:
+                src_label = "补充" if all_candidates else ""
+                print(f"📸 Pexels 找到 {len(pexels_photos)} 张{'（' + src_label + '）' if src_label else ''}")
+            for p in pexels_photos:
+                all_candidates.append(("pexels", p))
 
-    pexels_need = max(0, fetch_total - len(all_candidates))
-    if pexels_need > 0:
-        pexels_photos = search_pexels(keyword, pexels_need, pexels_cfg)
-        if pexels_photos:
-            src_label = "补充" if all_candidates else ""
-            print(f"📸 Pexels 找到 {len(pexels_photos)} 张{'（' + src_label + '）' if src_label else ''}")
-        for p in pexels_photos:
-            all_candidates.append(("pexels", p))
+    # 加载持久化图片 URL 去重记录
+    seen_urls_path = os.path.join(SCRIPT_DIR, ".workbuddy", "seen_image_urls.json")
+    os.makedirs(os.path.dirname(seen_urls_path), exist_ok=True)
+    try:
+        seen_image_urls = set(json.load(open(seen_urls_path)))
+    except Exception:
+        seen_image_urls = set()
 
-    # 查已有，过滤重复
+    # 查已有来源链接（记录级去重）
     existing_links, existing_count = get_existing_links(token, feishu_creds)
     print(f"📋 飞书已有 {existing_count} 条, {len(existing_links)} 个唯一链接")
 
-    new_candidates = [
-        (st, it) for st, it in all_candidates
-        if _get_photo_source_url(st, it) not in existing_links
-    ]
+    # 双重去重：来源 URL + 图片下载 URL
+    new_candidates = []
+    for st, it in all_candidates:
+        source_url = _get_photo_source_url(st, it)
+        image_url = _get_photo_url(st, it, pexels_cfg)
+        if source_url in existing_links:
+            continue
+        if image_url and image_url in seen_image_urls:
+            continue
+        new_candidates.append((st, it))
+
     print(f"   候选图片 {len(all_candidates)} 张，去重后 {len(new_candidates)} 张，每条记录 {images_per_record} 张")
 
     if dry_run:
@@ -1292,12 +1313,12 @@ def run(keyword=None, count=5, images_per_record=4, dry_run=False):
             success_count += 1
             continue
 
-        # 下载并上传所有图片
+        # 下载并上传所有图片，同步记录已用图片 URL
         file_tokens = []
         total_kb = 0
         for gi, (src_type, item) in enumerate(group):
             img_url = _get_photo_url(src_type, item, pexels_cfg)
-            if not img_url:
+            if not img_url or img_url in seen_image_urls:
                 continue
             src_prefix = {"museum": "museum", "unsplash": "unsplash", "pexels": "pexels"}.get(src_type, "img")
             tmp_idx = success_count * images_per_record + gi
@@ -1310,6 +1331,7 @@ def run(keyword=None, count=5, images_per_record=4, dry_run=False):
             if ft:
                 file_tokens.append({"file_token": ft})
                 total_kb += img_size // 1024
+                seen_image_urls.add(img_url)  # 当场标记，防止同次运行内重复
 
         if not file_tokens:
             print(f"  ❌ 记录 {success_count+1}: 所有图片上传失败，跳过")
@@ -1353,6 +1375,13 @@ def run(keyword=None, count=5, images_per_record=4, dry_run=False):
     if dry_run:
         print(f"\n🧪 Dry run 完成，预览 {success_count} 条候选记录（每条 {images_per_record} 张图），未写入飞书")
         return success_count
+
+    # 持久化保存已用图片 URL（写入成功后才保存，避免误标）
+    if not dry_run and seen_image_urls:
+        try:
+            json.dump(list(seen_image_urls), open(seen_urls_path, "w"), ensure_ascii=False)
+        except Exception as e:
+            print(f"  ⚠️ 图片去重记录保存失败: {e}")
 
     if records:
         result = write_records_to_feishu(token, records, feishu_creds)
