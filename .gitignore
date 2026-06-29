@@ -6,6 +6,7 @@ config/sources.yaml
 
 # 运行日志
 yono_collector.log
+.workbuddy/
 
 # Python 缓存
 __pycache__/
