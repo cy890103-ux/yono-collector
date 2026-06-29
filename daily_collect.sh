@@ -21,4 +21,7 @@ $PYTHON yono_collector.py --keyword "vintage brand design photography" --count 5
 echo "--- Tape ---" >> "$LOG"
 $PYTHON yono_collector.py --keyword "ambient indie soundtrack" --count 5 --images 4 >> "$LOG" 2>&1 || echo "⚠️ Tape 出错，继续下一分类" >> "$LOG"
 
+echo "--- 删除放弃记录 ---" >> "$LOG"
+$PYTHON yono_collector.py --delete-rejected >> "$LOG" 2>&1 || echo "⚠️ 删除放弃记录出错" >> "$LOG"
+
 echo "====== $(date '+%Y-%m-%d %H:%M:%S') 完成 ======" >> "$LOG"

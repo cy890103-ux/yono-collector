@@ -756,21 +756,32 @@ def get_museum_config(sources_cfg):
 
 
 def search_museum(keyword, count, museum_cfg):
-    """搜博物馆藏品。依次尝试 Met → AIC，汇总后返回统一格式列表。
+    """搜博物馆藏品。依次尝试所有已启用的博物馆，凑够 count 条为止。
+    顺序：Met → AIC → V&A → Cleveland → Europeana
     统一格式：{title, artist, medium, department, image_url, source_url, source_name}
     """
     if not museum_cfg.get("enabled"):
         return []
 
     results = []
+    need = count  # 每家只搜够剩余数量，节省请求数
 
-    met_cfg = museum_cfg.get("met", {})
-    if met_cfg.get("enabled"):
-        results.extend(_search_met(keyword, count * 3, met_cfg))
+    searchers = [
+        ("met",       _search_met,       museum_cfg.get("met", {})),
+        ("aic",       _search_aic,       museum_cfg.get("aic", {})),
+        ("vam",       _search_vam,       museum_cfg.get("vam", {"enabled": True})),
+        ("cleveland", _search_cleveland, museum_cfg.get("cleveland", {"enabled": True})),
+        ("europeana", _search_europeana, museum_cfg.get("europeana", {"enabled": True})),
+    ]
 
-    aic_cfg = museum_cfg.get("aic", {})
-    if aic_cfg.get("enabled") and len(results) < count:
-        results.extend(_search_aic(keyword, count * 3, aic_cfg))
+    for name, fn, cfg in searchers:
+        if len(results) >= count:
+            break
+        if not cfg.get("enabled", True):
+            continue
+        got = fn(keyword, need * 3, cfg)
+        results.extend(got)
+        print(f"  🏛 {name}: 找到 {len(got)} 件")
 
     return results
 
@@ -838,6 +849,106 @@ def _search_aic(keyword, limit, aic_cfg):
         return items
     except Exception as e:
         print(f"  ⚠️ AIC API 异常: {e}")
+        return []
+
+
+def _search_vam(keyword, limit, cfg):
+    """Victoria and Albert Museum（英国）— 免费无需 API Key"""
+    try:
+        r = requests.get(
+            "https://api.vam.ac.uk/v2/objects/search",
+            params={"q": keyword, "images_exist": 1, "page_size": min(limit, 45)},
+            timeout=15,
+        )
+        hits = r.json().get("records", [])
+        items = []
+        for h in hits:
+            img_id = (h.get("_primaryImageId") or "").strip()
+            if not img_id:
+                continue
+            items.append({
+                "title": h.get("_primaryTitle", ""),
+                "artist": h.get("_primaryMaker", {}).get("name", "") if isinstance(h.get("_primaryMaker"), dict) else "",
+                "medium": "",
+                "department": h.get("_primaryPlace", ""),
+                "image_url": f"https://framemark.vam.ac.uk/collections/{img_id}/full/735,/0/default.jpg",
+                "source_url": f"https://collections.vam.ac.uk/item/{h.get('systemNumber', '')}",
+                "source_name": "Victoria and Albert Museum",
+            })
+        return items
+    except Exception as e:
+        print(f"  ⚠️ V&A API 异常: {e.__class__.__name__}")
+        return []
+
+
+def _search_cleveland(keyword, limit, cfg):
+    """Cleveland Museum of Art（美国克利夫兰）— 免费无需 API Key"""
+    try:
+        r = requests.get(
+            "https://openaccess-api.clevelandart.org/api/artworks/",
+            params={"q": keyword, "has_image": 1, "limit": min(limit, 100)},
+            timeout=15,
+        )
+        hits = r.json().get("data", [])
+        items = []
+        for h in hits:
+            img = (h.get("images") or {}).get("web", {}).get("url", "")
+            if not img:
+                continue
+            items.append({
+                "title": h.get("title", ""),
+                "artist": ", ".join(
+                    a.get("description", "") for a in (h.get("creators") or [])[:1]
+                ),
+                "medium": h.get("technique", ""),
+                "department": h.get("department", ""),
+                "image_url": img,
+                "source_url": h.get("url", ""),
+                "source_name": "Cleveland Museum of Art",
+            })
+        return items
+    except Exception as e:
+        print(f"  ⚠️ Cleveland API 异常: {e.__class__.__name__}")
+        return []
+
+
+def _search_europeana(keyword, limit, cfg):
+    """Europeana（欧洲文化遗产聚合平台）— 免费，需 API Key（申请地址在 config 里）"""
+    api_key = cfg.get("api_key", "api2demo")  # api2demo 是公开演示 Key，有限速
+    try:
+        r = requests.get(
+            "https://api.europeana.eu/record/v2/search.json",
+            params={
+                "wskey": api_key,
+                "query": keyword,
+                "qf": "TYPE:IMAGE",
+                "media": "true",
+                "rows": min(limit, 100),
+                "profile": "rich",
+            },
+            timeout=15,
+        )
+        hits = r.json().get("items", [])
+        items = []
+        for h in hits:
+            imgs = h.get("edmIsShownBy") or h.get("edmPreview") or []
+            img = imgs[0] if imgs else ""
+            if not img:
+                continue
+            title_list = h.get("title") or h.get("dcTitle") or [""]
+            creator_list = h.get("dcCreator") or [""]
+            items.append({
+                "title": title_list[0] if title_list else "",
+                "artist": creator_list[0] if creator_list else "",
+                "medium": "",
+                "department": (h.get("dataProvider") or [""])[0],
+                "image_url": img,
+                "source_url": h.get("guid", ""),
+                "source_name": f"Europeana / {(h.get('dataProvider') or [''])[0]}",
+            })
+        return items
+    except Exception as e:
+        print(f"  ⚠️ Europeana API 异常: {e.__class__.__name__}")
         return []
 
 
@@ -1653,6 +1764,44 @@ def fix_pexels_tape_records(dry_run=False):
     print(f"\n✅ 修正 {total_updated} 条误标记录!")
 
 
+def delete_rejected_records():
+    """删除飞书表格中所有状态为 Reject｜放弃 的记录。"""
+    keywords_cfg, judge_cfg, sources_cfg = load_configs()
+    feishu_creds = get_feishu_credentials(sources_cfg)
+    token = get_feishu_token(feishu_creds)
+
+    resp = requests.get(
+        f"https://open.feishu.cn/open-apis/bitable/v1/apps/{feishu_creds['app_token']}/tables/{feishu_creds['table_id']}/records",
+        params={"page_size": 500},
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    items = resp.json().get("data", {}).get("items", [])
+    to_delete = [
+        item["record_id"] for item in items
+        if item.get("fields", {}).get("Status｜状态") == "Reject｜放弃"
+    ]
+    if not to_delete:
+        print("无放弃记录，无需删除")
+        return 0
+
+    print(f"🗑  发现 {len(to_delete)} 条放弃记录，开始删除...")
+    deleted = 0
+    for i in range(0, len(to_delete), 500):
+        batch = to_delete[i:i+500]
+        r = requests.post(
+            f"https://open.feishu.cn/open-apis/bitable/v1/apps/{feishu_creds['app_token']}/tables/{feishu_creds['table_id']}/records/batch_delete",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"records": batch}
+        ).json()
+        if r.get("code") == 0:
+            deleted += len(batch)
+            print(f"  ✅ 删除 {len(batch)} 条")
+        else:
+            print(f"  ❌ 删除失败: {r.get('msg')}")
+    print(f"🗑  共删除 {deleted} 条放弃记录")
+    return deleted
+
+
 def list_records():
     """查看飞书表格现有记录"""
     keywords_cfg, judge_cfg, sources_cfg = load_configs()
@@ -2178,10 +2327,13 @@ if __name__ == "__main__":
     parser.add_argument("--fill-links", action="store_true", help="补全飞书中只有 Source Link 的空白记录")
     parser.add_argument("--watch", "-w", action="store_true", help="监听模式：每3分钟自动补全 Save 记录的 Title/Post Content")
     parser.add_argument("--collect-all", action="store_true", help="按分类顺序批量抓取 Archive→Postcard→Field Notes→Tape，每类各5条")
+    parser.add_argument("--delete-rejected", action="store_true", help="删除飞书表格中所有状态为 Reject｜放弃 的记录")
     parser.add_argument("--dry-run", action="store_true", help="只预览评分，不下载、不上传、不写入飞书")
     args = parser.parse_args()
 
-    if args.list:
+    if args.delete_rejected:
+        delete_rejected_records()
+    elif args.list:
         list_records()
     elif args.backfill:
         backfill_records()
