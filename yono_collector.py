@@ -144,74 +144,65 @@ def get_music_judge_fields(keyword, keywords_cfg, judge_cfg, track, category="Ta
     }
 
 
-def build_asset_name(category, alt="", visual_tags=None, reason=""):
-    """生成 7 字以内、偏文艺、能提示使用方向的素材名。"""
+def build_asset_name(category, alt="", visual_tags=None, reason="", title="", artist=""):
+    """生成素材名：博物馆藏品用作品标题，其他来源从图片描述中提取独特词汇。"""
+    # 博物馆藏品：直接用作品标题（最多16字），有艺术家则附上
+    if title:
+        name = title[:14]
+        if artist:
+            short_artist = artist.split(",")[0].split("(")[0].strip()[:8]
+            name = f"{name}·{short_artist}" if short_artist else name
+        return name[:20]
+
     visual_tags = visual_tags or []
-    text = normalize_text(" ".join([alt, reason, " ".join(map(str, visual_tags))]))
 
-    object_names = [
-        (["penholder", "pen holder", "笔筒"], "笔筒"),
-        (["claylamp", "lamp", "台灯", "灯"], "灯下"),
-        (["deskcorner", "desk corner", "桌角"], "桌角"),
-        (["workmoment", "workspace", "work space", "laptop", "工作"], "桌上"),
-        (["notebooktag", "notebook", "tag", "腰封", "笔记本"], "纸签"),
-        (["sneaker", "shoe", "shoes", "白鞋", "鞋"], "白鞋"),
-        (["ceramic", "vase", "clay", "陶", "花瓶"], "陶器"),
-        (["room", "interior", "home", "屋", "室内"], "屋内"),
-        (["vintage", "classic", "archive", "复古"], "旧影"),
-        (["texture", "material", "wood", "paper", "材质", "纹理"], "材质"),
-        (["packaging", "package", "包装"], "小礼"),
-    ]
-    object_anchor = ""
-    for needles, label in object_names:
-        if any(needle in text for needle in needles):
-            object_anchor = label
-            break
+    # 从 alt 提取最具体的名词短语（跳过通用词）
+    alt_clean = (alt or "").strip()
+    generic_anchors = {
+        "paper", "texture", "room", "home", "interior", "background",
+        "vintage", "archive", "photo", "image", "picture", "object",
+    }
 
-    signal_names = [
-        (["warm light", "warm", "sunlight", "灯", "光"], "暖光"),
-        (["paper texture", "paper", "纸", "便签", "notebook"], "纸上"),
-        (["wooden texture", "wood", "wooden", "木"], "木纹"),
-        (["ceramic", "clay", "陶"], "陶色"),
-        (["vintage", "classic", "old", "复古"], "旧影"),
-        (["desk", "workspace", "桌"], "桌角"),
-        (["home", "room", "interior", "居家"], "屋内"),
-        (["soft color", "neutral", "muted"], "柔色"),
-        (["sneaker", "shoes", "outfit"], "日常"),
-        (["packaging", "gift"], "小礼"),
-        (["music", "record", "vinyl", "tape"], "声纹"),
-        (["texture", "material", "craft", "handmade"], "质感"),
-    ]
+    # 尝试从 alt 提取2-3个独特英文词作为标识
+    import re as _re
+    words = [w.lower() for w in _re.findall(r"[a-zA-Z]{3,}", alt_clean)]
+    stopwords = {"the","and","for","with","this","are","was","has","its","from","but","not","on","in","of","a","an"}
+    unique_words = [w for w in words if w not in stopwords and w not in generic_anchors]
 
-    anchor = object_anchor
-    for needles, label in signal_names:
-        if anchor:
-            break
-        if any(needle in text for needle in needles):
-            anchor = label
-            break
-
-    if not anchor:
+    if len(unique_words) >= 2:
+        # 取最有区分度的前2个词拼成标识
+        tag = "_".join(unique_words[:2])
+        # 映射成中文风格名
+        word_map = {
+            "brown": "棕", "white": "白", "black": "黑", "green": "绿",
+            "blue": "蓝", "red": "红", "gold": "金", "silver": "银",
+            "wooden": "木", "ceramic": "陶", "glass": "玻璃", "metal": "金属",
+            "book": "书", "chair": "椅", "table": "桌", "lamp": "灯",
+            "flower": "花", "plant": "绿植", "window": "窗", "door": "门",
+            "street": "街", "city": "城", "building": "楼", "wall": "墙",
+            "woman": "人", "man": "人", "person": "人", "people": "人群",
+            "light": "光", "shadow": "影", "water": "水", "sky": "天",
+            "notebook": "笔记", "pen": "笔", "desk": "桌", "coffee": "咖啡",
+            "cup": "杯", "bag": "包", "shoe": "鞋", "sneaker": "球鞋",
+            "cabinet": "柜", "shelf": "架", "mirror": "镜", "clock": "钟",
+            "portrait": "人像", "landscape": "风景", "still": "静物",
+        }
+        parts = [word_map.get(w, w) for w in unique_words[:2]]
+        anchor = "".join(parts)
+    elif unique_words:
+        anchor = unique_words[0]
+    else:
         anchor = {
-            "Postcard": "情绪",
-            "Archive": "旧影",
-            "Field Notes": "观察",
-            "OOTD": "日常",
-            "Block": "质感",
-            "Tape": "声纹",
+            "Postcard": "情绪", "Archive": "旧影", "Field Notes": "观察",
+            "OOTD": "日常", "Block": "质感", "Tape": "声纹",
         }.get(category, "片刻")
 
     suffix = {
-        "Postcard": "片刻",
-        "Archive": "档案",
-        "Field Notes": "札记",
-        "OOTD": "姿态",
-        "Block": "小物",
-        "Tape": "余音",
+        "Postcard": "片刻", "Archive": "档案", "Field Notes": "札记",
+        "OOTD": "姿态", "Block": "小物", "Tape": "余音",
     }.get(category, "素材")
 
-    name = f"{anchor}{suffix}"
-    return name[:7]
+    return f"{anchor}{suffix}"[:16]
 
 
 def evaluate_photo_quality(keyword, category, photo, judge, judge_cfg):
@@ -1297,6 +1288,8 @@ def run(keyword=None, count=5, images_per_record=4, dry_run=False):
             alt=alt_text,
             visual_tags=judge_fields.get("Visual Tags｜视觉标签", []),
             reason=judge_fields.get("YONO Reason｜为什么适合 YONO", ""),
+            title=primary_item.get("title", "") if primary_src == "museum" else "",
+            artist=primary_item.get("artist", "") if primary_src == "museum" else "",
         )
         source_url = _get_photo_source_url(primary_src, primary_item)
 
