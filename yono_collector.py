@@ -2034,6 +2034,36 @@ def watch_and_fill(interval=180):
                 if updates:
                     print(f"  ✅ 补全 {len(updates)} 条")
 
+            # ── 补全空素材名称 ──
+            name_updates = []
+            for item in items:
+                fields = item.get("fields", {})
+                if fields.get("Asset Name｜素材名称"):
+                    continue
+                category = fields.get("Category｜分类", "")
+                vtags = fields.get("Visual Tags｜视觉标签") or []
+                reason = fields.get("YONO Reason｜为什么适合 YONO", "") or ""
+                notes = fields.get("Notes｜备注", "") or ""
+                link_field = fields.get("Source Link｜来源链接", "")
+                link_text = link_field.get("link", "") if isinstance(link_field, dict) else str(link_field or "")
+                alt = notes or link_text.rstrip("/").split("/")[-1].replace("-", " ")
+                generated = build_asset_name(category, alt=alt, visual_tags=vtags, reason=reason)
+                if generated:
+                    name_updates.append({"record_id": item["record_id"], "fields": {"Asset Name｜素材名称": generated}})
+                    print(f"  🏷  空素材名 → {generated}  [{category}]")
+
+            if name_updates:
+                for i in range(0, len(name_updates), 5):
+                    batch = name_updates[i:i+5]
+                    r = requests.post(
+                        f"https://open.feishu.cn/open-apis/bitable/v1/apps/{feishu_creds['app_token']}/tables/{feishu_creds['table_id']}/records/batch_update",
+                        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                        json={"records": batch}
+                    ).json()
+                    if r.get("code") != 0:
+                        print(f"  ❌ 素材名写入失败: {r.get('msg')}")
+                print(f"  ✅ 补全素材名 {len(name_updates)} 条")
+
         except KeyboardInterrupt:
             print("\n👁  Watch 模式已退出。")
             break
