@@ -2078,15 +2078,41 @@ def watch_and_fill(interval=180):
         time.sleep(interval)
 
 
+def collect_all(count_per_category=5, dry_run=False):
+    """按分类顺序批量抓取：Archive → Postcard → Field Notes → Tape，每个分类各 count 条。
+    写入飞书后记录天然按分类成块排列。
+    """
+    # 每个分类对应的代表关键词（从 daily_rotation 里取一个，或用固定词）
+    category_keywords = {
+        "Archive":     "vintage brand design photography",
+        "Postcard":    "warm quiet morning light emotion",
+        "Field Notes": "notebook desk inspiration journal",
+        "Tape":        "ambient indie soundtrack",
+    }
+    order = ["Archive", "Postcard", "Field Notes", "Tape"]
+
+    total = 0
+    for cat in order:
+        keyword = category_keywords[cat]
+        print(f"\n{'='*50}")
+        print(f"▶ 分类: {cat}  关键词: {keyword}  目标: {count_per_category} 条")
+        print(f"{'='*50}")
+        n = run(keyword=keyword, count=count_per_category, dry_run=dry_run)
+        total += (n or 0)
+
+    print(f"\n🎉 collect-all 完成，共写入 {total} 条记录（{len(order)} 个分类各 {count_per_category} 条）")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="YONO Collector: Pexels → 飞书（OS.md 标准）")
     parser.add_argument("--keyword", "-k", help="搜索关键词（默认按星期轮换）")
-    parser.add_argument("--count", "-n", type=int, default=5, help="每次搜图数量（默认5）")
+    parser.add_argument("--count", "-n", type=int, default=5, help="每次搜图/抓取数量（默认5）")
     parser.add_argument("--list", "-l", action="store_true", help="只查看飞书记录数")
     parser.add_argument("--backfill", "-b", action="store_true", help="回填已有记录的空评判字段")
     parser.add_argument("--fix-tape", action="store_true", help="修正 Pexels 图片被错误标为 Tape 的记录")
     parser.add_argument("--fill-links", action="store_true", help="补全飞书中只有 Source Link 的空白记录")
     parser.add_argument("--watch", "-w", action="store_true", help="监听模式：每3分钟自动补全 Save 记录的 Title/Post Content")
+    parser.add_argument("--collect-all", action="store_true", help="按分类顺序批量抓取 Archive→Postcard→Field Notes→Tape，每类各5条")
     parser.add_argument("--dry-run", action="store_true", help="只预览评分，不下载、不上传、不写入飞书")
     args = parser.parse_args()
 
@@ -2100,5 +2126,7 @@ if __name__ == "__main__":
         fill_links(dry_run=args.dry_run)
     elif args.watch:
         watch_and_fill(interval=180)
+    elif args.collect_all:
+        collect_all(count_per_category=args.count, dry_run=args.dry_run)
     else:
         run(keyword=args.keyword, count=args.count, dry_run=args.dry_run)
