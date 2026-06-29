@@ -1017,8 +1017,30 @@ def write_records_to_feishu(token, records, feishu_creds):
     return resp.json()
 
 
-def run(keyword=None, count=5, dry_run=False):
-    """主流程：Tape 搜音乐，其它分类搜图 → 写入飞书"""
+def _get_photo_url(src_type, item, pexels_cfg):
+    """从不同来源的 photo/art 对象提取可下载的图片 URL。"""
+    if src_type == "museum":
+        return item.get("image_url", "")
+    if src_type == "unsplash":
+        return item["src"].get("large") or item["src"].get("original", "")
+    if src_type == "pexels":
+        return item["src"].get(pexels_cfg.get("image_size", "large"), "")
+    return ""
+
+
+def _get_photo_source_url(src_type, item):
+    """从 photo/art 对象提取来源页面 URL（用于去重）。"""
+    if src_type == "museum":
+        return item.get("source_url", "")
+    return item.get("url", "")
+
+
+def run(keyword=None, count=5, images_per_record=4, dry_run=False):
+    """主流程：Tape 搜音乐，其它分类搜图 → 写入飞书。
+    每条图片记录附 images_per_record 张图（3-5，默认4）。
+    """
+    images_per_record = max(1, min(5, images_per_record))
+
     # 加载配置
     keywords_cfg, judge_cfg, sources_cfg = load_configs()
     feishu_creds = get_feishu_credentials(sources_cfg)
@@ -1045,7 +1067,7 @@ def run(keyword=None, count=5, dry_run=False):
         print(f"   请手动上传图片到飞书，或换一个 Postcard / Archive / Field Notes / Tape 关键词。")
         return 0
 
-    print(f"🔍 关键词: {keyword} → 分类: {category}")
+    print(f"🔍 关键词: {keyword} → 分类: {category}  每条记录 {images_per_record} 张图")
     item_label = "每首音乐" if category == "Tape" else "每张图片"
     print(f"   基础评分: {base_judge_fields['Score｜评分']} | {item_label}将独立修正")
     print(f"   YONO: {base_judge_fields['YONO Reason｜为什么适合 YONO']}")
@@ -1064,29 +1086,45 @@ def run(keyword=None, count=5, dry_run=False):
             music_cfg,
         )
 
+    # 需要的图片总量：每条记录 images_per_record 张，多搜 50% 备用
+    fetch_total = count * images_per_record * 2
+
     # 图源策略：
     #   Archive      → 博物馆优先，不足补 Pexels
     #   Postcard / Field Notes → Unsplash 优先（有 Key），不足补 Pexels
     #   其他         → Pexels
-    museum_items = []
+    all_candidates = []  # [(src_type, item), ...]
+
     if category == "Archive" and museum_cfg.get("enabled"):
-        museum_items = search_museum(keyword, count, museum_cfg)
+        museum_items = search_museum(keyword, fetch_total, museum_cfg)
         print(f"🏛 博物馆找到 {len(museum_items)} 件藏品")
+        for item in museum_items:
+            all_candidates.append(("museum", item))
 
-    unsplash_photos = []
     if category in ("Postcard", "Field Notes") and unsplash_cfg.get("api_key"):
-        unsplash_photos = search_unsplash(keyword, count + 3, unsplash_cfg)
+        unsplash_photos = search_unsplash(keyword, fetch_total, unsplash_cfg)
         print(f"🌿 Unsplash 找到 {len(unsplash_photos)} 张")
+        for p in unsplash_photos:
+            all_candidates.append(("unsplash", p))
 
-    pexels_need = max(0, count - len(museum_items) - len(unsplash_photos))
-    photos = search_pexels(keyword, pexels_need + 3, pexels_cfg) if pexels_need > 0 else []
-    if photos:
-        src_label = "补充" if (museum_items or unsplash_photos) else ""
-        print(f"📸 Pexels 找到 {len(photos)} 张{'（' + src_label + '）' if src_label else ''}")
+    pexels_need = max(0, fetch_total - len(all_candidates))
+    if pexels_need > 0:
+        pexels_photos = search_pexels(keyword, pexels_need, pexels_cfg)
+        if pexels_photos:
+            src_label = "补充" if all_candidates else ""
+            print(f"📸 Pexels 找到 {len(pexels_photos)} 张{'（' + src_label + '）' if src_label else ''}")
+        for p in pexels_photos:
+            all_candidates.append(("pexels", p))
 
-    # 查已有
+    # 查已有，过滤重复
     existing_links, existing_count = get_existing_links(token, feishu_creds)
     print(f"📋 飞书已有 {existing_count} 条, {len(existing_links)} 个唯一链接")
+
+    new_candidates = [
+        (st, it) for st, it in all_candidates
+        if _get_photo_source_url(st, it) not in existing_links
+    ]
+    print(f"   候选图片 {len(all_candidates)} 张，去重后 {len(new_candidates)} 张，每条记录 {images_per_record} 张")
 
     if dry_run:
         print("🧪 Dry run: 只预览评分，不下载、不上传、不写入飞书")
@@ -1095,20 +1133,28 @@ def run(keyword=None, count=5, dry_run=False):
     today_str = time.strftime("%Y-%m-%d")
     records = []
     success_count = 0
+    idx = 0  # global photo index for unique filenames
 
-    # ── 博物馆藏品 ──
-    for i, art in enumerate(museum_items):
-        if success_count >= count:
+    while success_count < count and idx < len(new_candidates):
+        # 取本条记录所需的 images_per_record 张，主图 + 附图
+        group = new_candidates[idx:idx + images_per_record]
+        if not group:
             break
-        source_url = art["source_url"]
-        if source_url in existing_links:
-            print(f"  ⏭ Museum {i}: 已存在，跳过")
-            continue
+        idx += images_per_record
 
-        # 用 title + artist + medium 作为 alt，交给评判引擎
-        alt_text = " ".join(filter(None, [art["title"], art["artist"], art["medium"], art["department"]]))
-        # 构造一个伪 photo dict 供 get_judge_fields 读 alt
-        pseudo_photo = {"alt": alt_text, "width": 2000, "height": 2000}
+        primary_src, primary_item = group[0]
+
+        # 用主图生成评判字段和素材名
+        if primary_src == "museum":
+            alt_text = " ".join(filter(None, [
+                primary_item["title"], primary_item["artist"],
+                primary_item["medium"], primary_item["department"]
+            ]))
+            pseudo_photo = {"alt": alt_text, "width": 2000, "height": 2000}
+        else:
+            pseudo_photo = primary_item
+            alt_text = primary_item.get("alt") or ""
+
         judge_fields = get_judge_fields(keyword, keywords_cfg, judge_cfg, category=day_category, photo=pseudo_photo)
         asset_name = build_asset_name(
             judge_fields["Category｜分类"],
@@ -1116,173 +1162,81 @@ def run(keyword=None, count=5, dry_run=False):
             visual_tags=judge_fields.get("Visual Tags｜视觉标签", []),
             reason=judge_fields.get("YONO Reason｜为什么适合 YONO", ""),
         )
+        source_url = _get_photo_source_url(primary_src, primary_item)
 
         if dry_run:
+            src_label = {"museum": "🏛", "unsplash": "🌿", "pexels": "📸"}.get(primary_src, "📷")
             print(
-                f"  🧪 Museum {i}: {asset_name} "
+                f"  🧪 记录 {success_count+1}: {src_label} {asset_name} "
                 f"[{category} ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}]"
+                f"  ({len(group)} 张图)"
             )
-            print(f"     来源: {art['source_name']} | {art['title'][:50]}")
-            print(f"     {judge_fields['YONO Reason｜为什么适合 YONO']}")
-            if judge_fields.get("Title｜标题"):
-                print(f"     标题：{judge_fields['Title｜标题']}")
+            if primary_src == "museum":
+                print(f"     来源: {primary_item.get('source_name','')} | {primary_item.get('title','')[:50]}")
+            print(f"     {judge_fields['YONO Reason｜为什么适合 YONO'][:80]}")
             success_count += 1
             continue
 
-        img_path, img_size = download_image(art["image_url"], f"museum_{i}")
-        if img_path is None:
-            print(f"  ❌ Museum {i}: 图片下载失败")
+        # 下载并上传所有图片
+        file_tokens = []
+        total_kb = 0
+        for gi, (src_type, item) in enumerate(group):
+            img_url = _get_photo_url(src_type, item, pexels_cfg)
+            if not img_url:
+                continue
+            src_prefix = {"museum": "museum", "unsplash": "unsplash", "pexels": "pexels"}.get(src_type, "img")
+            tmp_idx = success_count * images_per_record + gi
+            img_path, img_size = download_image(img_url, f"{src_prefix}_{tmp_idx}")
+            if img_path is None:
+                continue
+            filename = f"{src_prefix}_{today_str}_{tmp_idx}.jpg"
+            ft = upload_to_feishu_drive(token, img_path, img_size, filename, feishu_creds)
+            os.remove(img_path)
+            if ft:
+                file_tokens.append({"file_token": ft})
+                total_kb += img_size // 1024
+
+        if not file_tokens:
+            print(f"  ❌ 记录 {success_count+1}: 所有图片上传失败，跳过")
             continue
 
-        src_prefix = "met" if "metmuseum" in art["source_url"] else "aic"
-        filename = f"{src_prefix}_{today_str}_{i}.jpg"
-        file_token = upload_to_feishu_drive(token, img_path, img_size, filename, feishu_creds)
-        os.remove(img_path)
+        # 组装 Notes：主图来源信息
+        if primary_src == "museum":
+            source_name = primary_item.get("source_name", "Museum")
+            notes = " | ".join(filter(None, [
+                primary_item.get("title"), primary_item.get("artist"), primary_item.get("medium")
+            ]))
+        elif primary_src == "unsplash":
+            source_name = "Unsplash"
+            photographer = primary_item.get("photographer", "")
+            notes = f"摄影师：{photographer}" if photographer else ""
+        else:
+            source_name = "Pexels"
+            notes = ""
 
-        notes = " | ".join(filter(None, [art["title"], art["artist"], art["medium"]]))
         record = {
             "fields": {
                 "Asset Name｜素材名称": asset_name,
                 "Date｜收集日期": now_ts,
-                "Source｜来源平台": art["source_name"],
+                "Source｜来源平台": source_name,
                 "Source Link｜来源链接": {"link": source_url, "text": source_url},
                 "Notes｜备注": notes,
                 **judge_fields,
+                "Image / File｜图片或文件": file_tokens,
             }
         }
-        if file_token:
-            record["fields"]["Image / File｜图片或文件"] = [{"file_token": file_token}]
-
         records.append(record)
-        has_img = "🏛" if file_token else "❌无图"
+        src_icon = {"museum": "🏛", "unsplash": "🌿", "pexels": "🖼"}.get(primary_src, "📷")
         print(
-            f"  {has_img} Museum {i}: {asset_name} ({img_size/1024:.0f}KB) "
-            f"[{category} ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}]"
-        )
-        success_count += 1
-
-    # ── Unsplash ──
-    for i, p in enumerate(unsplash_photos):
-        if success_count >= count:
-            break
-        source_url = p.get("url", "")
-        if source_url in existing_links:
-            print(f"  ⏭ Unsplash {i}: 已存在，跳过")
-            continue
-
-        judge_fields = get_judge_fields(keyword, keywords_cfg, judge_cfg, category=day_category, photo=p)
-        asset_name = build_asset_name(
-            judge_fields["Category｜分类"],
-            alt=p.get("alt") or "",
-            visual_tags=judge_fields.get("Visual Tags｜视觉标签", []),
-            reason=judge_fields.get("YONO Reason｜为什么适合 YONO", ""),
-        )
-
-        if dry_run:
-            print(
-                f"  🧪 Unsplash {i}: {asset_name} "
-                f"[{category} ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}]"
-            )
-            print(f"     {judge_fields['YONO Reason｜为什么适合 YONO']}")
-            if judge_fields.get("Title｜标题"):
-                print(f"     标题：{judge_fields['Title｜标题']}")
-            success_count += 1
-            continue
-
-        img_url = p["src"]["large"]
-        img_path, img_size = download_image(img_url, f"unsplash_{i}")
-        if img_path is None:
-            print(f"  ❌ Unsplash {i}: 下载失败")
-            continue
-
-        filename = f"unsplash_{today_str}_{i}.jpg"
-        file_token = upload_to_feishu_drive(token, img_path, img_size, filename, feishu_creds)
-        os.remove(img_path)
-
-        photographer = p.get("photographer", "")
-        record = {
-            "fields": {
-                "Asset Name｜素材名称": asset_name,
-                "Date｜收集日期": now_ts,
-                "Source｜来源平台": "Unsplash",
-                "Source Link｜来源链接": {"link": source_url, "text": source_url},
-                "Notes｜备注": f"摄影师：{photographer}" if photographer else "",
-                **judge_fields,
-            }
-        }
-        if file_token:
-            record["fields"]["Image / File｜图片或文件"] = [{"file_token": file_token}]
-
-        records.append(record)
-        has_img = "🌿" if file_token else "❌无图"
-        print(
-            f"  {has_img} Unsplash {i}: {asset_name} ({img_size/1024:.0f}KB) "
-            f"[{category} ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}]"
-        )
-        success_count += 1
-
-    # ── Pexels 补充 ──
-    for i, p in enumerate(photos):
-        if success_count >= count:
-            break
-        source_url = p.get("url", "")
-        if source_url in existing_links:
-            print(f"  ⏭ Pexels {i}: 已存在，跳过")
-            continue
-
-        judge_fields = get_judge_fields(keyword, keywords_cfg, judge_cfg, category=day_category, photo=p)
-        asset_name = build_asset_name(
-            judge_fields["Category｜分类"],
-            alt=p.get("alt") or "",
-            visual_tags=judge_fields.get("Visual Tags｜视觉标签", []),
-            reason=judge_fields.get("YONO Reason｜为什么适合 YONO", ""),
-        )
-
-        if dry_run:
-            print(
-                f"  🧪 Pexels {i}: {asset_name} "
-                f"[{category} ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}]"
-            )
-            print(f"     {judge_fields['YONO Reason｜为什么适合 YONO']}")
-            if judge_fields.get("Title｜标题"):
-                print(f"     标题：{judge_fields['Title｜标题']}")
-            if judge_fields.get("Content Angle｜内容角度"):
-                print(f"     内容角度：{judge_fields['Content Angle｜内容角度']}")
-            success_count += 1
-            continue
-
-        img_url = p["src"][pexels_cfg["image_size"]]
-        img_path, img_size = download_image(img_url, i)
-        if img_path is None:
-            print(f"  ❌ Pexels {i}: 下载失败")
-            continue
-
-        filename = f"pexels_{today_str}_{i}.jpg"
-        file_token = upload_to_feishu_drive(token, img_path, img_size, filename, feishu_creds)
-        os.remove(img_path)
-        record = {
-            "fields": {
-                "Asset Name｜素材名称": asset_name,
-                "Date｜收集日期": now_ts,
-                "Source｜来源平台": "Pexels",
-                "Source Link｜来源链接": {"link": source_url, "text": source_url},
-                **judge_fields,
-            }
-        }
-        if file_token:
-            record["fields"]["Image / File｜图片或文件"] = [{"file_token": file_token}]
-
-        records.append(record)
-        has_img = "🖼" if file_token else "❌无图"
-        print(
-            f"  {has_img} Pexels {i}: {asset_name} ({img_size/1024:.0f}KB) "
+            f"  {src_icon} 记录 {success_count+1}: {asset_name} "
+            f"({len(file_tokens)}张/{total_kb}KB) "
             f"[{category} ★{judge_fields['Score｜评分']} {judge_fields['Status｜状态']}]"
         )
         success_count += 1
 
     # 写入飞书
     if dry_run:
-        print(f"\n🧪 Dry run 完成，预览 {success_count} 条候选记录，未写入飞书")
+        print(f"\n🧪 Dry run 完成，预览 {success_count} 条候选记录（每条 {images_per_record} 张图），未写入飞书")
         return success_count
 
     if records:
@@ -1290,9 +1244,12 @@ def run(keyword=None, count=5, dry_run=False):
         if result.get("code") == 0:
             created = result.get("data", {}).get("records", [])
             print(f"\n🎉 成功写入 {len(created)} 条记录!")
-            img_count = sum(1 for r in created if r.get("fields", {}).get("Image / File｜图片或文件"))
-            print(f"   其中 {img_count} 条含图片附件")
-            print(f"   所有记录分类: {category} | 已按每张图片独立评分")
+            total_imgs = sum(
+                len(r.get("fields", {}).get("Image / File｜图片或文件") or [])
+                for r in created
+            )
+            print(f"   共 {total_imgs} 张图片附件（平均每条 {total_imgs//max(len(created),1)} 张）")
+            print(f"   所有记录分类: {category}")
             return len(created)
         else:
             print(f"\n❌ 写入失败: {result.get('msg')}")
@@ -1949,29 +1906,38 @@ def watch_and_fill(interval=180):
                 keyword = _extract_field_notes_keyword(title, post_content)
                 print(f"  🔍 搜图关键词: {keyword}  ← {name[:30]}")
 
-                # 优先 Unsplash，没有 Key 用 Pexels
+                # 优先 Unsplash，没有 Key 用 Pexels，搜 5 张候选
                 photos = []
                 if unsplash_cfg.get("api_key"):
-                    photos = search_unsplash(keyword, 5, unsplash_cfg)
+                    photos = search_unsplash(keyword, 10, unsplash_cfg)
                 if not photos:
-                    photos = search_pexels(keyword, 5, pexels_cfg)
+                    photos = search_pexels(keyword, 10, pexels_cfg)
 
-                img_path = img_size = file_token = None
-                for p in photos:
-                    img_url = p["src"].get("large") or p["src"].get("original", "")
-                    img_path, img_size = download_image(img_url, f"fn_{item['record_id'][:8]}")
-                    if img_path:
-                        break
-
-                if not img_path:
+                if not photos:
                     print(f"  ⚠️ 搜图失败，跳过")
                     continue
 
                 source_name = "Unsplash" if unsplash_cfg.get("api_key") and photos else "Pexels"
                 source_url = photos[0].get("url", "") if photos else ""
-                filename = f"fn_{today_str}_{item['record_id'][:8]}.jpg"
-                file_token = upload_to_feishu_drive(token, img_path, img_size, filename, feishu_creds)
-                os.remove(img_path)
+
+                # 下载并上传 3-5 张图
+                file_tokens = []
+                for pi, p in enumerate(photos[:5]):
+                    img_url = p["src"].get("large") or p["src"].get("original", "")
+                    img_path, img_size = download_image(img_url, f"fn_{item['record_id'][:8]}_{pi}")
+                    if not img_path:
+                        continue
+                    filename = f"fn_{today_str}_{item['record_id'][:8]}_{pi}.jpg"
+                    ft = upload_to_feishu_drive(token, img_path, img_size, filename, feishu_creds)
+                    os.remove(img_path)
+                    if ft:
+                        file_tokens.append({"file_token": ft})
+                    if len(file_tokens) >= 4:
+                        break
+
+                if not file_tokens:
+                    print(f"  ⚠️ 图片上传失败，跳过")
+                    continue
 
                 # 补全评判字段（用 title+post_content 作为 alt）
                 alt = f"{title} {post_content[:80]}"
@@ -1987,9 +1953,8 @@ def watch_and_fill(interval=180):
                     "Content Angle｜内容角度": judge_fields["Content Angle｜内容角度"],
                     "Visual Tags｜视觉标签": judge_fields["Visual Tags｜视觉标签"],
                     "Mood Tags｜情绪标签": judge_fields["Mood Tags｜情绪标签"],
+                    "Image / File｜图片或文件": file_tokens,
                 }
-                if file_token:
-                    update_fields["Image / File｜图片或文件"] = [{"file_token": file_token}]
 
                 r = requests.post(
                     f"https://open.feishu.cn/open-apis/bitable/v1/apps/{feishu_creds['app_token']}/tables/{feishu_creds['table_id']}/records/batch_update",
@@ -1997,7 +1962,7 @@ def watch_and_fill(interval=180):
                     json={"records": [{"record_id": item["record_id"], "fields": update_fields}]}
                 ).json()
                 if r.get("code") == 0:
-                    print(f"  🖼  {name[:40]} → 配图完成 ({img_size//1024}KB) [{source_name}]")
+                    print(f"  🖼  {name[:40]} → 配图完成 ({len(file_tokens)}张) [{source_name}]")
                 else:
                     print(f"  ❌ 写入失败: {r.get('msg')}")
 
@@ -2078,11 +2043,10 @@ def watch_and_fill(interval=180):
         time.sleep(interval)
 
 
-def collect_all(count_per_category=5, dry_run=False):
+def collect_all(count_per_category=5, images_per_record=4, dry_run=False):
     """按分类顺序批量抓取：Archive → Postcard → Field Notes → Tape，每个分类各 count 条。
-    写入飞书后记录天然按分类成块排列。
+    写入飞书后记录天然按分类成块排列。每条记录附 images_per_record 张图（默认4张）。
     """
-    # 每个分类对应的代表关键词（从 daily_rotation 里取一个，或用固定词）
     category_keywords = {
         "Archive":     "vintage brand design photography",
         "Postcard":    "warm quiet morning light emotion",
@@ -2095,18 +2059,19 @@ def collect_all(count_per_category=5, dry_run=False):
     for cat in order:
         keyword = category_keywords[cat]
         print(f"\n{'='*50}")
-        print(f"▶ 分类: {cat}  关键词: {keyword}  目标: {count_per_category} 条")
+        print(f"▶ 分类: {cat}  关键词: {keyword}  目标: {count_per_category} 条 x {images_per_record} 张/条")
         print(f"{'='*50}")
-        n = run(keyword=keyword, count=count_per_category, dry_run=dry_run)
+        n = run(keyword=keyword, count=count_per_category, images_per_record=images_per_record, dry_run=dry_run)
         total += (n or 0)
 
-    print(f"\n🎉 collect-all 完成，共写入 {total} 条记录（{len(order)} 个分类各 {count_per_category} 条）")
+    print(f"\n🎉 collect-all 完成，共写入 {total} 条记录（{len(order)} 个分类各 {count_per_category} 条，每条 {images_per_record} 张图）")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="YONO Collector: Pexels → 飞书（OS.md 标准）")
     parser.add_argument("--keyword", "-k", help="搜索关键词（默认按星期轮换）")
-    parser.add_argument("--count", "-n", type=int, default=5, help="每次搜图/抓取数量（默认5）")
+    parser.add_argument("--count", "-n", type=int, default=5, help="每次抓取记录数量（默认5）")
+    parser.add_argument("--images", "-i", type=int, default=4, help="每条图片记录附几张图（3-5，默认4）")
     parser.add_argument("--list", "-l", action="store_true", help="只查看飞书记录数")
     parser.add_argument("--backfill", "-b", action="store_true", help="回填已有记录的空评判字段")
     parser.add_argument("--fix-tape", action="store_true", help="修正 Pexels 图片被错误标为 Tape 的记录")
@@ -2127,6 +2092,6 @@ if __name__ == "__main__":
     elif args.watch:
         watch_and_fill(interval=180)
     elif args.collect_all:
-        collect_all(count_per_category=args.count, dry_run=args.dry_run)
+        collect_all(count_per_category=args.count, images_per_record=args.images, dry_run=args.dry_run)
     else:
-        run(keyword=args.keyword, count=args.count, dry_run=args.dry_run)
+        run(keyword=args.keyword, count=args.count, images_per_record=args.images, dry_run=args.dry_run)
